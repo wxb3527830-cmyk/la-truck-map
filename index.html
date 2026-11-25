@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#123c36">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>洛城卡车 · 限行参考</title>
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="./">
+    <span class="brand-icon">↗</span>
+    <span class="brand-text">洛城卡车<small>GREATER LOS ANGELES</small></span>
+  </a>
+  <span class="reference">限行参考 · 无实时路况</span>
+  <button id="install" hidden>安装应用</button>
+</header>
+<main>
+  <section class="map-shell" aria-label="限行地图">
+    <div id="map"></div>
+    <div class="map-top">
+      <span class="live-dot"></span>
+      <span id="data-status" role="status">正在读取本地快照…</span>
+    </div>
+    <div class="legend" aria-label="图例">
+      <span><i class="ban-swatch"></i>禁卡车</span>
+      <span><i class="height-swatch"></i>限高标牌</span>
+      <span><i class="orange"></i>限重</span>
+      <span><i class="purple"></i>司机纠偏</span>
+      <span><i class="green-dash"></i>司机标可通</span>
+      <small>地图直接显示桥高 (ft'in")、限重 (lbs) 与禁行；红牌/粗线表示本车超限或禁入</small>
+    </div>
+    <div class="map-actions">
+      <button id="follow" type="button">◎ 开启定位</button>
+      <button id="add-marker" type="button">＋ 添加标记</button>
+      <button id="demo" type="button">▷ 演示位置</button>
+      <button id="cancel-pick" type="button" class="cancel-pick" hidden>✕ 取消选点</button>
+    </div>
+    <div class="alert-box alert-info" id="alert" role="alert" hidden>
+      <span id="alert-text"></span>
+      <button type="button" id="alert-close" class="alert-close" aria-label="关闭提示">✕</button>
+    </div>
+  </section>
+  <aside>
+    <div class="panel-title">
+      <div><small>出车前，先看一眼</small><h1>大洛杉矶限行地图</h1></div>
+      <span class="version">V1.1</span>
+    </div>
+    <p class="notice" id="location-status">点击「开启定位」后，浏览器才会请求定位权限。请停车后操作。</p>
+    <nav class="tabs" aria-label="工具">
+      <button type="button" data-tab="route" class="active">路线</button>
+      <button type="button" data-tab="vehicle">车辆</button>
+      <button type="button" data-tab="edits">标记</button>
+      <button type="button" data-tab="settings">设置</button>
+    </nav>
+    <section id="tab-route" class="tab-panel">
+      <h2>去哪里？</h2>
+      <label>查找地址 / 地点
+        <input id="search" placeholder="例如：Port of Long Beach" maxlength="200">
+      </label>
+      <button id="search-btn" type="button" class="primary">搜索地点</button>
+      <small class="attribution">搜索：Photon / komoot · © OpenStreetMap contributors<br>仅点击搜索时联网；间隔至少 1.2 秒。</small>
+      <div id="search-results"></div>
+      <div class="route-fields">
+        <label>起点<input id="origin" readonly placeholder="从搜索结果选择，或使用定位"></label>
+        <div class="input-row route-btn-row">
+          <button type="button" id="use-gps">使用当前位置</button>
+          <button type="button" id="pick-start">在地图点选起点</button>
+        </div>
+        <label>终点<input id="destination" readonly placeholder="从搜索结果选择终点"></label>
+      </div>
+      <button id="route-btn" type="button" class="primary">规划卡车路线</button>
+      <button id="stop-nav" type="button" hidden>结束导航</button>
+      <p id="route-status" class="notice">未配置 ORS 密钥：可查看限高标牌、禁行路段、定位、预警与司机纠偏；卡车路线需在「设置」填入免费 ORS Key 后启用。</p>
+      <ol id="turns"></ol>
+    </section>
+
+    <section id="tab-vehicle" class="tab-panel" hidden>
+      <h2>我的卡车</h2>
+      <p class="hint">使用实际总重（车 + 货，磅 lbs）与车高（英尺/英寸）。限高预留约 3 英寸安全余量；空白项将保守提示核实。</p>
+      <form id="vehicle-form">
+        <label>总重
+          <div class="input-row">
+            <input id="weight" type="number" min="0.1" step="any" placeholder="例如 80000">
+            <select id="weight-unit">
+              <option value="lb" selected>磅 lbs</option>
+              <option value="short_ton">美制短吨</option>
+              <option value="t">公吨</option>
+            </select>
+          </div>
+        </label>
+        <label>车高
+          <div class="input-row">
+            <input id="height" type="text" inputmode="decimal" placeholder="例如 13'6&quot; 或 13.5">
+            <select id="height-unit">
+              <option value="ft" selected>英尺 ft</option>
+            </select>
+          </div>
+        </label>
+        <label>总长
+          <div class="input-row">
+            <input id="length" type="number" min="0.1" step="any" placeholder="例如 65">
+            <select id="length-unit">
+              <option value="ft" selected>英尺 ft</option>
+            </select>
+          </div>
+        </label>
+        <label>车宽（可选）
+          <div class="input-row">
+            <input id="width" type="number" min="0.1" step="any" placeholder="例如 8.5">
+            <select id="width-unit">
+              <option value="ft" selected>英尺 ft</option>
+            </select>
+          </div>
+        </label>
+        <label>单轴重（可选）
+          <div class="input-row">
+            <input id="axle" type="number" min="0.1" step="any" placeholder="例如 34000">
+            <select id="axle-unit">
+              <option value="lb" selected>磅 lbs</option>
+              <option value="short_ton">美制短吨</option>
+              <option value="t">公吨</option>
+            </select>
+          </div>
+        </label>
+        <button type="submit" class="primary">保存车辆资料</button>
+      </form>
+      <p id="vehicle-status" role="status"></p>
+    </section>
+
+    <section id="tab-edits" class="tab-panel" hidden>
+      <h2>司机路况纠偏</h2>
+      <p class="hint" id="storage-mode">本机保存 · 司机纠偏优先覆盖同位置 OSM 显示、预警与路线避让 · 未经官方核实，请以现场路牌为准</p>
+      <button type="button" id="new-edit" class="primary">＋ 在地图上添加标记</button>
+      <div id="edit-list"></div>
+      <div class="input-row edit-io-row">
+        <button type="button" id="export">导出 JSON</button>
+        <label class="file-button">导入 JSON<input id="import" type="file" accept="application/json" hidden></label>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab-panel" hidden>
+      <h2>预警与连接</h2>
+      <label>预警距离
+        <select id="warning-distance">
+          <option value="152">500 ft</option>
+          <option value="244" selected>800 ft</option>
+          <option value="457">1,500 ft</option>
+          <option value="762">2,500 ft</option>
+        </select>
+      </label>
+      <label class="checkbox"><input id="voice" type="checkbox" checked> 语音预警 / 转向提示</label>
+      <button type="button" id="test-alert">测试声音与振动</button>
+      <p class="hint">请先点击一次测试以启用声音。iPhone 通常不支持网页振动；后台 / 锁屏不保证定位或语音。</p>
+      <form id="ors-form" autocomplete="off">
+        <label>OpenRouteService API Key
+          <input id="ors-key" type="password" autocomplete="new-password" placeholder="可留空，仅保存在此浏览器">
+        </label>
+        <button type="submit" id="save-key">保存密钥</button>
+      </form>
+      <p class="hint">密钥仅保存于本机并仅发送给 ORS。浏览器存储不是加密保险箱；勿在共用设备保存。</p>
+      <button type="button" id="refresh-data">刷新 OSM 限行</button>
+      <p id="cache-info" class="hint"></p>
+      <p class="hint">底图需要网络。离线可打开应用、车辆资料、已缓存限行和本机标记；不提供离线底图。</p>
+    </section>
+  </aside>
+</main>
+<footer>本应用仅供参考，不能替代路牌，也不能替代专业卡车导航（如 Trucker Path、CoPilot）。数据可能不完整或过时，没有实时路况。请以现场标志和合法限行为准。</footer>
+
+<dialog id="edit-dialog">
+  <form id="edit-form">
+    <h2>司机纠偏 / 标记</h2>
+    <p id="edit-coordinates" class="hint"></p>
+    <label>标记类型
+      <select id="edit-type">
+        <option value="cannot">不能通过（卡车禁行）</option>
+        <option value="can">可以通过（点击道路弹窗关联后覆盖 OSM）</option>
+        <option value="restriction">新限行点 / 纠偏限高限重</option>
+      </select>
+    </label>
+    <div id="edit-limits-group">
+      <label>限高（英尺/英寸，如 13'5" 或 13.5）
+        <div class="input-row">
+          <input id="edit-height" type="text" inputmode="decimal" placeholder="例如 13'5&quot; 或 13.5">
+          <select id="edit-height-unit">
+            <option value="ft" selected>英尺 ft</option>
+          </select>
+        </div>
+      </label>
+      <label>限重（默认磅 lbs，可选）
+        <div class="input-row">
+          <input id="edit-weight" type="number" min="0.1" step="any" placeholder="例如 10000">
+          <select id="edit-weight-unit">
+            <option value="lb" selected>磅 lbs</option>
+            <option value="short_ton">美制短吨</option>
+            <option value="t">公吨</option>
+          </select>
+        </div>
+      </label>
+    </div>
+    <label>备注
+      <textarea id="edit-notes" maxlength="500" rows="3" placeholder="现场标志净空、断头路/无法掉头、时段或注意事项"></textarea>
+    </label>
+    <p id="edit-error" class="form-error" role="alert" hidden></p>
+    <div class="input-row dialog-actions">
+      <button type="submit" class="primary">保存标记</button>
+      <button type="button" id="delete-edit" class="danger-btn" hidden>删除</button>
+      <button type="button" id="cancel-edit">取消</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="vendor/leaflet.js"></script>
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
