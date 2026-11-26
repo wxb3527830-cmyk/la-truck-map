@@ -1,5 +1,5 @@
 import {
-  BBOX,
+  BBOX, OVERPASS_FETCH_TIMEOUT_MS, usableOverpassElements, rankPhotonResults, isStandalone, keySaveFeedback, KEY_INSTALL_HINT, refreshFailureStatus,
   OVERPASS_ENDPOINTS,
   buildOverpassQuery,
   overpassTiles,
@@ -114,6 +114,9 @@ let destination = null;
 let originPin = null;
 let destinationPin = null;
 let routeBusy = false;
+let queuedPlan = false;
+let pendingGpsPlan = false;
+let restrictionsReady = false;
 let routeEpoch = 0;
 let lastReroute = 0;
 let offCount = 0;
@@ -177,11 +180,30 @@ function notify(text, opts = {}) {
 $('alert-close').onclick = hideAlert;
 window.addEventListener('storage-warning', () => notify('浏览器存储不可用或空间不足；请导出标记。', { level: 'warn' }));
 
+function menu(open) {
+  $('tools-menu').hidden = !open;
+  $('menu-open').setAttribute('aria-expanded', String(open));
+  if (open) $('menu-close').focus();
+}
+$('menu-open').onclick = () => menu(true);
+$('menu-close').onclick = () => { menu(false); $('menu-open').focus(); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') menu(false); });
 function tab(name) {
-  document.querySelectorAll('.tab-panel').forEach(p => { p.hidden = p.id !== `tab-${name}`; });
+  document.querySelectorAll('#tools-menu .tab-panel').forEach(p => { p.hidden = p.id !== `tab-${name}`; });
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  menu(name !== 'route');
 }
 document.querySelectorAll('[data-tab]').forEach(b => { b.onclick = () => tab(b.dataset.tab); });
+$('layer-restrictions').onchange = e => [osmLayer, labelLayer].forEach(layer => e.target.checked ? layer.addTo(map) : layer.remove());
+$('layer-edits').onchange = e => e.target.checked ? editLayer.addTo(map) : editLayer.remove();
+let greenLoaded = false;
+$('layer-green').onchange = async e => {
+  if (e.target.checked) {
+    if (!greenLoaded) { greenLoaded = true; await loadTruckOkRoads(); }
+    if (e.target.checked) truckOkLayer.addTo(map);
+  } else truckOkLayer.remove();
+};
+truckOkLayer.remove();
 
 function recomputeOverrides() {
   cachedOverrideState = applyDriverOverrides(features, edits);
@@ -696,6 +718,7 @@ function setRouteStatus(text, mode = 'normal', title = '') {
 }
 
 function stopNavigation(message = '导航已结束。') {
+  queuedPlan = false;
   route = null;
   routeEpoch++;
   routeLayer.clearLayers();
@@ -711,7 +734,7 @@ function stopNavigation(message = '导航已结束。') {
 }
 
 function invalidateRoute() {
-  if (route || routeBusy) stopNavigation('车辆、标记或限行数据已变化，请重新规划路线。');
+  if (route || routeBusy || routeLayer.getLayers().length) stopNavigation('车辆、标记或限行数据已变化，请重新规划路线。');
 }
 
 function showCache(data) {
@@ -742,17 +765,18 @@ async function fetchOverpassResilient() {
     const query = buildOverpassQuery(bbox);
     let tileSuccess = false;
     let tileElements = [];
+    let preserveExisting = false;
     for (const ep of orderedEndpoints) {
       try {
         const r = await fetch(ep, {
           method: 'POST',
           body: new URLSearchParams({ data: query }),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(OVERPASS_FETCH_TIMEOUT_MS),
         });
         if (!r.ok) throw Error(`HTTP ${r.status}`);
         const data = await r.json();
-        if (!Array.isArray(data.elements) || data.remark) throw Error('Overpass incomplete');
-        tileElements = data.elements;
+        tileElements = usableOverpassElements(data);
+        preserveExisting = Boolean(data.remark);
         usedEndpoints.add(ep);
         orderedEndpoints = [ep, ...orderedEndpoints.filter(u => u !== ep)];
         tilesOk++;
@@ -762,7 +786,7 @@ async function fetchOverpassResilient() {
         // Try next alternate endpoint
       }
     }
-    tileResults.push({ bbox, ok: tileSuccess, elements: tileElements });
+    tileResults.push({ bbox, ok: tileSuccess, elements: tileElements, preserveExisting });
     if (!tileSuccess && i === 0) {
       // If core tile failed on all mirrors (e.g. offline), mark remaining tiles failed without hanging.
       for (let j = i + 1; j < tiles.length; j++) {
@@ -794,7 +818,6 @@ async function loadTruckOkRoads() {
 }
 
 async function loadData() {
-  loadTruckOkRoads();
   try {
     const snap = await fetch('./data/osm-snapshot.json').then(r => { if (!r.ok) throw Error(); return r.json(); });
     const snapFeatures = fromOverpass(snap);
@@ -832,8 +855,9 @@ async function loadData() {
   } catch {
     setDataStatus('快照读取失败，尝试在线获取');
   }
+  restrictionsReady = features.length > 0;
   // Auto-refresh on load does NOT consume the 1-minute manual cooldown (m4).
-  refreshData({ manual: false });
+  requestAnimationFrame(() => refreshData({ manual: false }));
 }
 
 async function refreshData(arg = {}) {
@@ -874,6 +898,7 @@ async function refreshData(arg = {}) {
     if (!next.length) throw Error('无完整限行数据');
     rawElements = merged.elements;
     features = next;
+    restrictionsReady = true;
     // Compact cache payload and skip localStorage cache if > 2.5 MB to avoid quota warning
     try {
       const compact = {
@@ -900,7 +925,7 @@ async function refreshData(arg = {}) {
       if (manual) notify(`已在线更新 ${features.length} 段道路限行数据。`, { level: 'info' });
     }
   } catch {
-    setDataStatus(null, '在线暂不可用，保留离线数据');
+    setDataStatus(null, refreshFailureStatus(baseDataStatus));
   } finally {
     refreshBusy = false;
     $('refresh-data').disabled = false;
@@ -973,20 +998,26 @@ keyStatus();
 if ($('goto-ors-settings')) {
   $('goto-ors-settings').onclick = () => {
     tab('settings');
+    showKeyHint();
     $('ors-key').focus();
   };
 }
 
+function showKeyHint() {
+  $('key-install-hint').hidden = isStandalone();
+  $('key-install-hint').textContent = isStandalone() ? '' : KEY_INSTALL_HINT;
+}
 $('ors-form').onsubmit = e => {
   e.preventDefault();
-  write('ors-key', $('ors-key').value.trim());
+  const value = $('ors-key').value.trim();
+  const saved = write('ors-key', value);
+  const feedback = keySaveFeedback(saved, Boolean(value), isStandalone());
+  $('key-feedback').textContent = feedback.message;
+  $('key-install-hint').textContent = feedback.hint;
+  $('key-install-hint').hidden = !feedback.hint;
+  if (!saved) return;
   invalidateRoute();
-  if (getKey()) {
-    setRouteStatus('密钥已保存至本机（未联网验证）。请选择起终点规划卡车路线。', 'normal');
-  } else {
-    keyStatus();
-  }
-  notify(getKey() ? '密钥已保存至本机。' : '已清除本机密钥，卡车路线功能已暂停。', { level: 'info' });
+  keyStatus();
 };
 
 // Follow button state machine (M2)
@@ -1002,6 +1033,11 @@ map.on('dragstart', () => {
 
 function setPosition(coords, heading = null, accuracy = 0, isDemo = false) {
   current = { coords, heading, accuracy, isDemo };
+  if (pendingGpsPlan && !isDemo) {
+    pendingGpsPlan = false;
+    setEndpoint('origin', coords, '当前位置');
+    queueMicrotask(() => planRoute());
+  }
   if (!truck) {
     truck = L.marker(coords, {
       icon: L.divIcon({
@@ -1038,6 +1074,8 @@ function startGpsWatch() {
   if (!window.isSecureContext || !navigator.geolocation) {
     followState = { mode: 'idle', following: false };
     syncFollowUI();
+    pendingGpsPlan = false;
+    setRouteStatus('定位不可用，请在「更多」地图点选或手动填写起点。');
     $('location-status').textContent = '此连接不支持定位：请用 localhost 或可信 HTTPS。可用演示位置 / 地图点选起点。';
     return;
   }
@@ -1051,6 +1089,10 @@ function startGpsWatch() {
       watch = null;
       followState = { mode: 'idle', following: false };
       syncFollowUI();
+      pendingGpsPlan = false;
+      const deniedText = '定位未成功，可以在「更多」地图点选或手动填写起点。';
+      setRouteStatus(deniedText);
+      notify(deniedText, { level: 'info' });
       $('location-status').textContent = ({
         1: '定位权限被拒绝。请在浏览器设置允许定位，或使用演示位置 / 地图点选。',
         2: '暂时无法获取位置，请使用演示位置或稍后重试。',
@@ -1081,6 +1123,7 @@ $('follow').onclick = () => {
 
 // Pick mode with cancel button & Escape support (M3/M4/m4)
 function enterPick(mode) {
+  menu(false);
   pickMode = mode;
   document.querySelector('.map-shell')?.classList.add('pick-active');
   $('cancel-pick').hidden = false;
@@ -1109,20 +1152,35 @@ $('add-marker').onclick = () => enterPick('edit');
 $('new-edit').onclick = () => enterPick('edit');
 
 function setEndpoint(type, coords, name) {
-  const rs = plannedRouteStyles();
-  if (type === 'origin') {
-    origin = coords;
-    $('origin').value = name;
-    originPin?.remove();
-    originPin = L.circleMarker(coords, rs.startPin).addTo(map).bindTooltip('起点');
-  } else {
-    destination = coords;
-    $('destination').value = name;
-    destinationPin?.remove();
-    destinationPin = L.circleMarker(coords, rs.endPin).addTo(map).bindTooltip('终点');
-  }
   invalidateRoute();
+  const isStart = type === 'origin';
+  if (isStart) pendingGpsPlan = false;
+  const icon = L.divIcon({ className: 'endpoint-icon', html: `<div class="endpoint-pin ${isStart ? 'start' : 'end'}">${isStart ? '起' : '终'}</div>`, iconSize: [36, 44], iconAnchor: [18, 44] });
+  const pin = L.marker(coords, { icon, draggable: true, zIndexOffset: 600 }).addTo(map).bindTooltip(isStart ? '起点 · 可拖动' : '终点 · 可拖动');
+  pin.on('dragstart', () => {
+    pendingGpsPlan = false;
+    invalidateRoute();
+    setRouteStatus('位置已改变，请点击「规划卡车路线」重新校验。');
+  });
+  pin.on('dragend', () => {
+    const p = pin.getLatLng();
+    setEndpoint(type, [p.lat, p.lng], `地图${isStart ? '起点' : '终点'} ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`);
+    setRouteStatus('位置已改变，请点击「规划卡车路线」重新校验。');
+  });
+  if (isStart) {
+    origin = coords; $('origin').value = name;
+    originPin?.remove(); originPin = pin;
+  } else {
+    destination = coords; $('destination').value = name;
+    destinationPin?.remove(); destinationPin = pin;
+  }
 }
+$('set-manual-start').onclick = () => {
+  const p = $('manual-start').value.split(',').map(v => Number(v.trim()));
+  if (p.length !== 2 || !p.every(Number.isFinite) || p[0] < BBOX[0] || p[0] > BBOX[2] || p[1] < BBOX[1] || p[1] > BBOX[3]) return notify('请填写大洛杉矶范围内的纬度, 经度。');
+  pendingGpsPlan = false;
+  setEndpoint('origin', p, '手动起点'); menu(false); map.setView(p, 14);
+};
 
 map.on('click', e => {
   if (!pickMode) return;
@@ -1148,11 +1206,9 @@ map.on('click', e => {
 });
 
 $('use-gps').onclick = () => {
-  if (!current) {
-    notify('请先开启定位或设置演示位置。', { level: 'info' });
-    return;
-  }
-  setEndpoint('origin', current.coords, current.isDemo ? '演示位置（非 GPS）' : '当前 GPS 位置');
+  menu(false);
+  if (current && !current.isDemo) setEndpoint('origin', current.coords, '当前位置');
+  else { pendingGpsPlan = true; startGpsWatch(); }
 };
 
 $('demo').onclick = () => {
@@ -1363,22 +1419,17 @@ $('search-btn').onclick = async () => {
   $('search-results').textContent = '正在搜索…';
   try {
     const key = q.toLowerCase();
-    const cache = read('search-cache', {});
+    const cache = read('search-cache-v2', {});
     let results = cache[key];
     if (!results) {
       const url = new URL(cfg.photonUrl || 'https://photon.komoot.io/api/');
-      url.search = new URLSearchParams({ q, limit: 5, lat: 34.05, lon: -118.24, bbox: '-119,33.4,-116.8,34.85' });
+      url.search = new URLSearchParams({ q, limit: 10, lat: 34.05, lon: -118.24, bbox: '-119,33.4,-116.8,34.85' });
       const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
       if (!r.ok) throw Error();
       const data = await r.json();
-      results = (data.features || [])
-        .filter(f => f.geometry?.type === 'Point')
-        .map(f => ({
-          coords: f.geometry.coordinates.slice(0, 2).reverse(),
-          name: [f.properties.name, f.properties.housenumber, f.properties.street, f.properties.city, f.properties.state].filter(Boolean).join(', '),
-        }));
+      results = rankPhotonResults(data.features);
       cache[key] = results;
-      write('search-cache', Object.fromEntries(Object.entries(cache).slice(-30)));
+      write('search-cache-v2', Object.fromEntries(Object.entries(cache).slice(-30)));
     }
     $('search-results').replaceChildren();
     for (const hit of results) {
@@ -1387,16 +1438,16 @@ $('search-btn').onclick = async () => {
       const name = document.createElement('span');
       name.textContent = hit.name;
       div.append(name);
-      const row = document.createElement('div');
-      row.className = 'input-row';
-      for (const [type, title] of [['origin', '设为起点'], ['destination', '设为终点']]) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = title;
-        b.onclick = () => { setEndpoint(type, hit.coords, hit.name); map.setView(hit.coords, 14); };
-        row.append(b);
-      }
-      div.append(row);
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = '去这里';
+      b.onclick = () => {
+        setEndpoint('destination', hit.coords, hit.name);
+        $('search').value = hit.name;
+        $('search-results').replaceChildren();
+        map.setView(hit.coords, 16);
+        planRoute();
+      };
+      div.append(b);
       $('search-results').append(div);
     }
     if (!results.length) $('search-results').textContent = '没有找到结果。试试英文地名，或地图点选起点。';
@@ -1446,12 +1497,39 @@ async function requestOrsRoute(body) {
   return f;
 }
 
+function fitRouteBounds(coords) {
+  const rect = $('map').getBoundingClientRect();
+  // Measure after route/status rendering: the navigation card grows when turns appear.
+  // Leave room above each marker's anchor for its full 44px icon, plus a drag margin.
+  let top = 0;
+  for (const selector of ['.search-dock', '.map-top', '#alert']) {
+    const el = document.querySelector(selector);
+    if (el && el.getClientRects().length) top = Math.max(top, el.getBoundingClientRect().bottom - rect.top);
+  }
+  const card = document.querySelector('.route-card').getBoundingClientRect();
+  const bounds = L.latLngBounds([...coords, origin, destination].filter(Boolean));
+  map.fitBounds(bounds, {
+    paddingTopLeft: [44, top + 68],
+    paddingBottomRight: [44, rect.bottom - card.top + 24],
+    maxZoom: 16,
+    animate: false,
+  });
+}
+
 async function planRoute(auto = false) {
-  if (routeBusy) return;
+  if (routeBusy) { if (!auto) queuedPlan = true; return; }
+  if (!destination) { setRouteStatus('请先在顶部搜索目的地。'); return; }
+  if (!origin) {
+    if (current && !current.isDemo) setEndpoint('origin', current.coords, '当前位置');
+    else { pendingGpsPlan = true; setRouteStatus('正在获取当前位置；若未允许定位，可在「更多」设置起点。'); startGpsWatch(); return; }
+  }
+  if (!restrictionsReady) { setRouteStatus('限行数据仍在加载，请稍后再规划。'); return; }
   if (!getKey()) {
+    showKeyHint();
     const st = getRouteUnavailableState(false);
     setRouteStatus(st.message, 'unavailable', st.title);
-    if (!auto) notify(st.message, { level: 'warn' });
+    if (!auto) notify('规划需要 ORS 密钥，请在「更多 → 设置」填写。' + (isStandalone() ? '' : KEY_INSTALL_HINT), { level: 'info' });
+    if (!auto) fitRouteBounds([origin, destination]);
     return;
   }
   const start = auto ? current?.coords : origin;
@@ -1511,7 +1589,6 @@ async function planRoute(auto = false) {
           .bindTooltip(`阻断：${b.feature.tags?.name || '限行路段'} (${label(b.restriction)})`)
           .addTo(routeLayer);
       }
-      if (!auto) map.fitBounds(L.latLngBounds(coords), { padding: [45, 45] });
       const conflictSummary = safety.blocking
         .slice(0, 3)
         .map(b => `${b.feature.tags?.name || '限行点'}（${label(b.restriction)}）`)
@@ -1519,6 +1596,7 @@ async function planRoute(auto = false) {
       const msg = `已拒绝不安全路线：候选路线经过 ${safety.blocking.length} 处已知禁行或超限路段（${conflictSummary}）。未启动导航，请调整起终点或使用专业卡车导航核实。`;
       setRouteStatus(msg, 'blocked');
       notify(msg, { level: 'danger', voice: !auto });
+      if (!auto) fitRouteBounds(coords);
       return;
     }
 
@@ -1527,15 +1605,6 @@ async function planRoute(auto = false) {
     const rs = plannedRouteStyles();
     L.polyline(coords, rs.casing).addTo(routeLayer);
     L.polyline(coords, rs.line).addTo(routeLayer);
-    L.marker(coords[0], {
-      icon: L.divIcon({ className: 'map-badge', html: '<div class="route-pin-badge start">起</div>', iconSize: [30, 30], iconAnchor: [15, 15] }),
-      zIndexOffset: 450,
-    }).bindTooltip('路线起点').addTo(routeLayer);
-    L.marker(coords[coords.length - 1], {
-      icon: L.divIcon({ className: 'map-badge', html: '<div class="route-pin-badge end">终</div>', iconSize: [30, 30], iconAnchor: [15, 15] }),
-      zIndexOffset: 450,
-    }).bindTooltip('路线终点').addTo(routeLayer);
-    if (!auto) map.fitBounds(L.latLngBounds(coords), { padding: [45, 45] });
     renderTurns(steps);
     navStep = steps[0]?.type === 11 ? 1 : 0;
     offCount = 0;
@@ -1552,6 +1621,7 @@ async function planRoute(auto = false) {
       `${(summary.distance / 1609.344).toFixed(1)} mi · 约 ${Math.round(summary.duration / 60)} 分钟（无实时路况）。${noteStr} 转向文字为 ORS 英文。`,
       'normal'
     );
+    if (!auto) fitRouteBounds(coords);
   } catch (err) {
     if (epoch === routeEpoch) {
       route = null;
@@ -1565,6 +1635,7 @@ async function planRoute(auto = false) {
   } finally {
     routeBusy = false;
     $('route-btn').disabled = false;
+    if (queuedPlan) { queuedPlan = false; queueMicrotask(() => planRoute()); }
   }
 }
 
@@ -1632,7 +1703,9 @@ $('install').onclick = async () => {
 };
 
 if ('serviceWorker' in navigator && window.isSecureContext) {
-  navigator.serviceWorker.register('./sw.js').catch(() => notify('离线缓存注册失败，在线功能仍可用。', { level: 'info' }));
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    navigator.serviceWorker.register('./sw.js').catch(() => notify('离线缓存注册失败，在线功能仍可用。', { level: 'info' }));
+  }));
 }
 
-loadData();
+requestAnimationFrame(() => requestAnimationFrame(() => loadData()));

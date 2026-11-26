@@ -1,9 +1,10 @@
 // Only cache our shell + data. No bulk map tile download, external API response or key caching.
-const CACHE='la-truck-v1-12';
+const CACHE='la-truck-v1-13';
 const FILES=['./','./index.html','./style.css','./app.js','./core.js','./storage.js','./config.js','./vendor/leaflet.js','./vendor/leaflet.css','./data/osm-snapshot.json','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-maskable.png'];
 const OPTIONAL_FILES=['./data/truck-ok-roads.json'];
 const ALL_CACHED=[...FILES,...OPTIONAL_FILES];
-self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(async c=>{await c.addAll(FILES);await Promise.allSettled(OPTIONAL_FILES.map(f=>c.add(f).catch(()=>{})));}).then(()=>self.skipWaiting())));
+self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(async c=>{await c.addAll(FILES); // Optional green roads enter the cache only when requested.
+}).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('la-truck-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',e=>{
  const url=new URL(e.request.url);if(e.request.method!=='GET'||url.origin!==self.location.origin)return;

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#123c36">
+  <meta name="theme-color" content="#ffffff">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>洛城卡车 · 限行参考</title>
@@ -14,14 +14,6 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <a class="brand" href="./">
-    <span class="brand-icon">↗</span>
-    <span class="brand-text">洛城卡车<small>GREATER LOS ANGELES</small></span>
-  </a>
-  <span class="reference">限行参考 · 无实时路况</span>
-  <button id="install" hidden>安装应用</button>
-</header>
 <main>
   <section class="map-shell" aria-label="限行地图">
     <div id="map"></div>
@@ -29,55 +21,22 @@
       <span class="live-dot"></span>
       <span id="data-status" role="status">正在读取本地快照…</span>
     </div>
-    <div class="legend" aria-label="图例">
-      <span><i class="ok-swatch"></i>正常通行</span>
-      <span><i class="ban-swatch"></i>禁卡车</span>
-      <span><i class="height-swatch"></i>限高标牌</span>
-      <span><i class="orange"></i>限重</span>
-      <span><i class="purple"></i>司机纠偏</span>
-      <span><i class="green-dash"></i>司机标可通</span>
-      <small>绿线为公共主干可通行参考，红黄线/红牌为禁行或超限；桥高 (ft'in") 与限重 (lbs) 仍以现场路牌为准</small>
+    <div class="search-dock">
+      <button id="menu-open" aria-label="更多工具" aria-expanded="false" aria-controls="tools-menu">☰</button>
+      <input id="search" aria-label="搜索目的地" placeholder="搜索目的地 / 地址" maxlength="200" enterkeyhint="search">
+      <button id="search-btn" aria-label="搜索目的地">⌕</button>
+      <div id="search-results" aria-live="polite"></div>
     </div>
     <div class="map-actions">
       <button id="follow" type="button">◎ 开启定位</button>
-      <button id="add-marker" type="button">＋ 添加标记</button>
-      <button id="demo" type="button">▷ 演示位置</button>
-      <button id="cancel-pick" type="button" class="cancel-pick" hidden>✕ 取消选点</button>
+      <button id="cancel-pick" type="button" hidden>✕ 取消选点</button>
     </div>
     <div class="alert-box alert-info" id="alert" role="alert" hidden>
       <span id="alert-text"></span>
       <button type="button" id="alert-close" class="alert-close" aria-label="关闭提示">✕</button>
     </div>
   </section>
-  <aside>
-    <div class="panel-title">
-      <div><small>出车前，先看一眼</small><h1>大洛杉矶限行地图</h1></div>
-      <span class="version">V1.1</span>
-    </div>
-    <p class="notice" id="location-status">点击「开启定位」后，浏览器才会请求定位权限。请停车后操作。</p>
-    <nav class="tabs" aria-label="工具">
-      <button type="button" data-tab="route" class="active">路线</button>
-      <button type="button" data-tab="vehicle">车辆</button>
-      <button type="button" data-tab="edits">标记</button>
-      <button type="button" data-tab="settings">设置</button>
-    </nav>
-    <section id="tab-route" class="tab-panel">
-      <h2>去哪里？</h2>
-      <label>查找地址 / 地点
-        <input id="search" placeholder="例如：Port of Long Beach" maxlength="200">
-      </label>
-      <button id="search-btn" type="button" class="primary">搜索地点</button>
-      <small class="attribution">搜索：Photon / komoot · © OpenStreetMap contributors<br>仅点击搜索时联网；间隔至少 1.2 秒。</small>
-      <div id="search-results"></div>
-      <div class="route-fields">
-        <label>起点<input id="origin" readonly placeholder="从搜索结果选择，或使用定位"></label>
-        <div class="input-row route-btn-row">
-          <button type="button" id="use-gps">使用当前位置</button>
-          <button type="button" id="pick-start">在地图点选起点</button>
-        </div>
-        <label>终点<input id="destination" readonly placeholder="从搜索结果选择终点"></label>
-      </div>
-      <button id="route-btn" type="button" class="primary">规划卡车路线</button>
+  <section id="tab-route" class="route-card" aria-label="路线规划"><div class="route-heading"><span>↗ 卡车路线</span><input id="destination" readonly aria-label="已选目的地" placeholder="先搜索目的地"></div>      <button id="route-btn" type="button" class="primary">规划卡车路线</button>
       <button id="stop-nav" type="button" hidden>结束导航</button>
       <div id="route-status" class="notice route-unavailable" role="status">
         <strong class="route-banner-title">⚠ 卡车路线功能暂未开通</strong>
@@ -87,6 +46,41 @@
       <ol id="turns"></ol>
     </section>
 
+
+  <aside id="tools-menu" aria-label="更多工具" hidden>
+    <div class="menu-heading"><strong>更多工具</strong><button id="menu-close" aria-label="关闭更多工具">✕</button></div>
+    <button id="install" hidden>安装应用</button>
+    <section class="menu-map-tools"><h2>地图与起点</h2>
+      <label class="checkbox"><input id="layer-restrictions" type="checkbox" checked>限行与限高</label>
+      <label class="checkbox"><input id="layer-edits" type="checkbox" checked>司机纠偏</label>
+      <label class="checkbox"><input id="layer-green" type="checkbox">绿色可通行参考道路（按需加载）</label>
+    <div class="legend" aria-label="图例">
+      <span><i class="ok-swatch"></i>正常通行</span>
+      <span><i class="ban-swatch"></i>禁卡车</span>
+      <span><i class="height-swatch"></i>限高标牌</span>
+      <span><i class="orange"></i>限重</span>
+      <span><i class="purple"></i>司机纠偏</span>
+      <span><i class="green-dash"></i>司机标可通</span>
+      <small>绿线为公共主干可通行参考，红黄线/红牌为禁行或超限；桥高 (ft'in") 与限重 (lbs) 仍以现场路牌为准</small>
+    </div>
+
+      <label>起点<input id="origin" readonly placeholder="当前位置（规划时请求定位）"></label>
+      <div class="input-row"><button id="use-gps">使用当前位置</button><button id="pick-start">地图点选起点</button></div>
+      <label>手动起点坐标（纬度, 经度）<input id="manual-start" placeholder="34.05, -118.24"></label>
+      <button id="set-manual-start">使用此起点</button>
+      <div class="input-row"><button id="add-marker">＋ 添加标记</button><button id="demo">▷ 演示位置</button></div>
+    </section>
+    <div class="panel-title">
+      <div><small>出车前，先看一眼</small><h1>大洛杉矶限行地图</h1></div>
+      <span class="version">V1.1</span>
+    </div>
+    <p class="notice" id="location-status">起点默认当前位置，第一次规划时请求定位。请停车后操作。</p>
+    <nav class="tabs" aria-label="工具">
+      <button type="button" data-tab="route" class="active">路线</button>
+      <button type="button" data-tab="vehicle">车辆</button>
+      <button type="button" data-tab="edits">标记</button>
+      <button type="button" data-tab="settings">设置</button>
+    </nav>
     <section id="tab-vehicle" class="tab-panel" hidden>
       <h2>我的卡车</h2>
       <p class="hint">使用实际总重（车 + 货，磅 lbs）与车高（英尺/英寸）。限高预留约 3 英寸安全余量；空白项将保守提示核实。</p>
@@ -96,8 +90,6 @@
             <input id="weight" type="number" min="0.1" step="any" placeholder="例如 80000">
             <select id="weight-unit">
               <option value="lb" selected>磅 lbs</option>
-              <option value="short_ton">美制短吨</option>
-              <option value="t">公吨</option>
             </select>
           </div>
         </label>
@@ -130,8 +122,6 @@
             <input id="axle" type="number" min="0.1" step="any" placeholder="例如 34000">
             <select id="axle-unit">
               <option value="lb" selected>磅 lbs</option>
-              <option value="short_ton">美制短吨</option>
-              <option value="t">公吨</option>
             </select>
           </div>
         </label>
@@ -170,6 +160,7 @@
         </label>
         <button type="submit" id="save-key">保存密钥</button>
       </form>
+      <p id="key-feedback" role="status"></p><p id="key-install-hint" class="hint" hidden></p>
       <p class="hint">密钥仅保存于本机并仅发送给 HeiGIT / OpenRouteService。浏览器存储不是加密保险箱；勿在共用设备保存。</p>
       <button type="button" id="refresh-data">刷新 OSM 限行</button>
       <p id="cache-info" class="hint"></p>
@@ -177,7 +168,7 @@
     </section>
   </aside>
 </main>
-<footer>本应用仅供参考，不能替代路牌，也不能替代专业卡车导航（如 Trucker Path、CoPilot）。数据可能不完整或过时，没有实时路况。请以现场标志和合法限行为准。</footer>
+<footer>仅供参考 · 无实时路况 · 以路牌和专业卡车导航为准</footer>
 
 <dialog id="edit-dialog">
   <form id="edit-form">
@@ -204,8 +195,6 @@
           <input id="edit-weight" type="number" min="0.1" step="any" placeholder="例如 10000">
           <select id="edit-weight-unit">
             <option value="lb" selected>磅 lbs</option>
-            <option value="short_ton">美制短吨</option>
-            <option value="t">公吨</option>
           </select>
         </div>
       </label>

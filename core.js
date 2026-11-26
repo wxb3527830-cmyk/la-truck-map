@@ -1827,7 +1827,7 @@ export function mergeOverpassTileResults(existingElements = [], tileResults = []
   }
 
   const succeededBboxes = succeededTiles.map(t => t.bbox).filter(Boolean);
-  const failedBboxes = failedTiles.map(t => t.bbox).filter(Boolean);
+  const failedBboxes = [...failedTiles, ...succeededTiles.filter(t => t.preserveExisting)].map(t => t.bbox).filter(Boolean);
   const merged = new Map();
 
   for (const el of existingElements) {
@@ -1864,7 +1864,7 @@ export function mergeOverpassTileResults(existingElements = [], tileResults = []
     elements,
     tilesOk,
     tilesTotal,
-    partial: failedTiles.length > 0,
+    partial: failedTiles.length > 0 || succeededTiles.some(t => t.preserveExisting),
     changed: true,
   };
 }
@@ -2196,4 +2196,33 @@ export function formatRouteError(err) {
     return '网络连接失败，无法连接 HeiGIT / OpenRouteService 路线服务，请检查网络后重试。';
   }
   return raw ? `路线规划失败：${raw}` : '路线规划失败，请稍后重试。';
+}
+
+
+// Browser deadline includes the server's 25-second query plus download time.
+export const OVERPASS_FETCH_TIMEOUT_MS = 30000;
+export function usableOverpassElements(data) {
+  if (!Array.isArray(data?.elements)) throw Error('Overpass payload missing elements');
+  const elements = data.elements.filter(e => e?.type && e.id != null && elementPoints(e).length);
+  if (!elements.length) throw Error('Overpass payload has no usable geometry');
+  return elements; // A remark may accompany usable partial data; retain it.
+}
+export const KEY_INSTALL_HINT = '从聊天或微信内置浏览器打开时，密钥常常记不住。请用 Safari 打开，选择「添加到主屏幕」，以后从主屏幕图标打开。';
+export function isStandalone(nav = globalThis.navigator, match = globalThis.matchMedia) {
+  return Boolean(nav?.standalone || match?.('(display-mode: standalone)').matches);
+}
+export function keySaveFeedback(saved, hasKey, standalone) {
+  return { message: !saved ? '保存失败：浏览器存储不可用，请重试。' : hasKey ? '密钥已保存至本机（未联网验证）。' : '已清除本机密钥。', hint: saved && hasKey && !standalone ? KEY_INSTALL_HINT : '' };
+}
+export function rankPhotonResults(features = []) {
+  return features.filter(f => f?.geometry?.type === 'Point' && f.geometry.coordinates?.length >= 2 && f.geometry.coordinates.slice(0, 2).every(Number.isFinite))
+    .map(f => {
+      const p = f.properties || {};
+      const poi = p.osm_key && !['highway', 'place', 'boundary'].includes(p.osm_key);
+      const street = p.osm_key === 'highway' || ['street', 'city', 'district', 'locality', 'state', 'country'].includes(p.type);
+      return { coords: [f.geometry.coordinates[1], f.geometry.coordinates[0]], name: [p.name, p.housenumber, p.street, p.city, p.state].filter(Boolean).join(', '), precision: p.housenumber ? 100 : poi ? 80 : !street && p.osm_type === 'N' ? 60 : street ? 0 : 20 };
+    }).sort((a, b) => b.precision - a.precision);
+}
+export function refreshFailureStatus(base) {
+  return /内置快照/.test(base) ? '限行数据用的是内置快照，在线更新没成功' : /缓存/.test(base) ? '限行数据用的是本机缓存，在线更新没成功' : '限行数据更新没成功，请核实现场路牌';
 }
