@@ -1,4 +1,26 @@
 // Pure OSM/unit/geometry/override/routing helpers shared by the app and tests.
+export function effectiveOrsKey(override, builtin) {
+  const clean = value => typeof value === 'string' ? value.trim() : '';
+  return clean(override) || clean(builtin);
+}
+
+export const GPS_OPTIONS = { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 };
+
+// Keep recent precise fixes through brief coarse readings, but let fresh fixes
+// replace them so a moving driver never stays pinned to an old best reading.
+export function selectGpsFix(previous, next) {
+  if (!next || !next.coords?.every(Number.isFinite) || next.coords.length !== 2 ||
+      Math.abs(next.coords[0]) > 90 || Math.abs(next.coords[1]) > 180 ||
+      !Number.isFinite(next.accuracy) || next.accuracy < 0 || !Number.isFinite(next.timestamp)) return previous;
+  if (!previous) return next;
+  const elapsed = next.timestamp - previous.timestamp;
+  if (elapsed < -5000) return previous;
+  if (next.accuracy < previous.accuracy) return next;
+  if (elapsed < 0) return previous;
+  if (elapsed >= 15000 || (elapsed >= 5000 && next.accuracy <= 100)) return next;
+  return next.accuracy <= Math.max(previous.accuracy * 1.5, previous.accuracy + 10) ? next : previous;
+}
+
 export const BBOX = [33.4, -119, 34.85, -116.8];
 
 export const OVERPASS_ENDPOINTS = [

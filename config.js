@@ -1,6 +1,6 @@
-// Empty by default. Never commit real credentials. A pasted ORS key is stored only on this device.
+// Owner-approved public ORS default. Optional replacement keys stay on this device.
 window.APP_CONFIG = {
-  orsKey: '',
+  orsKey: 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImQyMzczYzMxNTRkZjRlMTE4NmE2ZWIwMDQ3NjljMDFiIiwiaCI6Im11cm11cjY0In0=',
   overpassUrl: 'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   overpassUrls: [
     'https://maps.mail.ru/osm/tools/overpass/api/interpreter',

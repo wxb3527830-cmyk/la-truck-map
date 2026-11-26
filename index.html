@@ -28,6 +28,7 @@
       <div id="search-results" aria-live="polite"></div>
     </div>
     <div class="map-actions">
+      <p id="gps-accuracy-hint" role="status" hidden>定位不够准，请在 iPhone 设置中为 Safari（或当前浏览器）开启「精确位置」。</p>
       <button id="follow" type="button">◎ 开启定位</button>
       <button id="cancel-pick" type="button" hidden>✕ 取消选点</button>
     </div>
@@ -38,11 +39,11 @@
   </section>
   <section id="tab-route" class="route-card" aria-label="路线规划"><div class="route-heading"><span>↗ 卡车路线</span><input id="destination" readonly aria-label="已选目的地" placeholder="先搜索目的地"></div>      <button id="route-btn" type="button" class="primary">规划卡车路线</button>
       <button id="stop-nav" type="button" hidden>结束导航</button>
-      <div id="route-status" class="notice route-unavailable" role="status">
-        <strong class="route-banner-title">⚠ 卡车路线功能暂未开通</strong>
-        <span id="route-status-text">卡车路线功能暂未开通：需先在「设置」粘贴免费的 OpenRouteService (HeiGIT) API Key 才能规划卡车路线（密钥仅保存在本机浏览器）。地图限高、禁行、绿色可通行干道、地点搜索、定位预警与司机纠偏均可正常使用。</span>
+      <div id="route-status" class="notice" role="status">
+        <strong class="route-banner-title" hidden></strong>
+        <span id="route-status-text">搜索目的地后即可规划卡车路线。</span>
       </div>
-      <button id="goto-ors-settings" type="button" class="goto-settings-btn">前往「设置」填入免费 ORS API Key →</button>
+      <button id="goto-ors-settings" type="button" class="goto-settings-btn" hidden>前往「设置」填入免费 ORS API Key →</button>
       <ol id="turns"></ol>
     </section>
 
@@ -155,13 +156,14 @@
       <button type="button" id="test-alert">测试声音与振动</button>
       <p class="hint">请先点击一次测试以启用声音。iPhone 通常不支持网页振动；后台 / 锁屏不保证定位或语音。</p>
       <form id="ors-form" autocomplete="off">
-        <label>OpenRouteService (HeiGIT) API Key
+        <p class="hint">应用已有内置密钥，下面仅用于可选替换。留空保存会清除本机替换，继续使用内置密钥。</p>
+        <label>可选替换 OpenRouteService (HeiGIT) API Key
           <input id="ors-key" type="password" autocomplete="new-password" placeholder="可留空，仅保存在此浏览器">
         </label>
         <button type="submit" id="save-key">保存密钥</button>
       </form>
       <p id="key-feedback" role="status"></p><p id="key-install-hint" class="hint" hidden></p>
-      <p class="hint">密钥仅保存于本机并仅发送给 HeiGIT / OpenRouteService。浏览器存储不是加密保险箱；勿在共用设备保存。</p>
+      <p class="hint">替换密钥仅保存于本机，规划路线时仅发送给 HeiGIT / OpenRouteService。浏览器存储不是加密保险箱；勿在共用设备保存。</p>
       <button type="button" id="refresh-data">刷新 OSM 限行</button>
       <p id="cache-info" class="hint"></p>
       <p class="hint">底图需要网络。离线可打开应用、车辆资料、已缓存限行和本机标记；不提供离线底图。</p>

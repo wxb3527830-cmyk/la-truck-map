@@ -424,7 +424,7 @@ dialog::backdrop { background: rgba(20, 56, 48, .48); }
 .truck-icon, .map-badge { background: none; border: 0; }
 .truck-pointer {
   font-size: 26px;
-  background: #144d42;
+  background: #2563eb;
   color: #fff;
   border: 3px solid #fff;
   width: 42px;
@@ -656,5 +656,11 @@ aside#tools-menu { position:fixed; z-index:1350; top:calc(10px + env(safe-area-i
 @media(min-width:800px) { .search-dock { left:24px; top:24px; } .map-top { top:94px; left:28px; } .route-card { left:24px; bottom:54px; } .map-actions { bottom:70px; right:24px; } }
 
 footer { min-height:0; }
-.map-actions button:first-child { background:white; color:#1967d2; border:0; }
+.map-actions #follow { background:white; color:#1967d2; border:0; }
+#gps-accuracy-hint {
+  position:absolute; bottom:100%; right:0; width:min(280px, calc(100vw - 32px));
+  margin:0 0 8px; padding:10px 12px; border-radius:12px;
+  background:white; color:#644300; font-size:13px; line-height:1.5;
+  box-shadow:0 2px 8px #20304025;
+}
 .leaflet-control-attribution { margin-bottom:calc(34px + env(safe-area-inset-bottom)) !important; }

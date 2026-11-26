@@ -1,4 +1,5 @@
 import {
+  effectiveOrsKey, GPS_OPTIONS, selectGpsFix,
   BBOX, OVERPASS_FETCH_TIMEOUT_MS, usableOverpassElements, rankPhotonResults, isStandalone, keySaveFeedback, KEY_INSTALL_HINT, refreshFailureStatus,
   OVERPASS_ENDPOINTS,
   buildOverpassQuery,
@@ -988,8 +989,9 @@ $('test-alert').onclick = () => {
   notify('预警测试：前方低桥限高，请核实路牌。', { level: 'danger', voice: true });
 };
 
-$('ors-key').value = read('ors-key', '') || cfg.orsKey || '';
-const getKey = () => read('ors-key', '') || cfg.orsKey || '';
+// Keep the password field blank: the built-in key is never copied into the UI.
+$('ors-key').value = '';
+const getKey = () => effectiveOrsKey(read('ors-key', ''), cfg.orsKey);
 function keyStatus() {
   const st = getRouteUnavailableState(Boolean(getKey()));
   setRouteStatus(st.message, st.available ? 'normal' : 'unavailable', st.title);
@@ -1013,9 +1015,11 @@ $('ors-form').onsubmit = e => {
   const saved = write('ors-key', value);
   const feedback = keySaveFeedback(saved, Boolean(value), isStandalone());
   $('key-feedback').textContent = feedback.message;
+  if (saved && !value && getKey()) $('key-feedback').textContent = '已清除本机替换密钥，继续使用内置密钥。';
   $('key-install-hint').textContent = feedback.hint;
   $('key-install-hint').hidden = !feedback.hint;
   if (!saved) return;
+  $('ors-key').value = '';
   invalidateRoute();
   keyStatus();
 };
@@ -1031,8 +1035,10 @@ map.on('dragstart', () => {
   syncFollowUI();
 });
 
-function setPosition(coords, heading = null, accuracy = 0, isDemo = false) {
-  current = { coords, heading, accuracy, isDemo };
+function setPosition(coords, heading = null, accuracy = 0, isDemo = false, timestamp = Date.now()) {
+  const next = { coords, heading, accuracy, isDemo, timestamp };
+  if (!isDemo && selectGpsFix(current?.isDemo ? null : current, next) !== next) return;
+  current = next;
   if (pendingGpsPlan && !isDemo) {
     pendingGpsPlan = false;
     setEndpoint('origin', coords, '当前位置');
@@ -1048,7 +1054,7 @@ function setPosition(coords, heading = null, accuracy = 0, isDemo = false) {
       }),
       zIndexOffset: 500,
     }).addTo(map);
-    accuracyCircle = L.circle(coords, { radius: accuracy, color: '#1e6b5c', weight: 1, fillOpacity: 0.08 }).addTo(map);
+    accuracyCircle = L.circle(coords, { radius: accuracy, color: '#2563eb', weight: 1, fillOpacity: 0.08 }).addTo(map);
   }
   truck.setLatLng(coords);
   truck.getElement()?.querySelector('.truck-pointer')?.style.setProperty('transform', `rotate(${heading || 0}deg)`);
@@ -1063,6 +1069,7 @@ function setPosition(coords, heading = null, accuracy = 0, isDemo = false) {
   $('location-status').textContent = isDemo
     ? `演示位置 · 不是真实 GPS · ${followState.following ? '正在跟随演示点' : '已暂停跟随（点重新跟随回到演示点）'}`
     : `GPS 已更新 · 精度 ±${accFt} ft${accuracy > 100 ? '，精度较低，预警暂缓' : ''} · ${followState.following ? '正在跟随' : '已暂停跟随'}`;
+  $('gps-accuracy-hint').hidden = isDemo || accuracy <= 100;
 
   if (isDemo || accuracy <= 100) {
     checkAlerts();
@@ -1083,7 +1090,7 @@ function startGpsWatch() {
   syncFollowUI();
   if (watch !== null) return;
   watch = navigator.geolocation.watchPosition(
-    p => setPosition([p.coords.latitude, p.coords.longitude], p.coords.heading, p.coords.accuracy, false),
+    p => setPosition([p.coords.latitude, p.coords.longitude], p.coords.heading, p.coords.accuracy, false, p.timestamp ?? Date.now()),
     err => {
       if (watch !== null) navigator.geolocation.clearWatch(watch);
       watch = null;
@@ -1099,7 +1106,7 @@ function startGpsWatch() {
         3: '定位超时，请重试或使用演示位置。',
       })[err.code] || '定位失败。';
     },
-    { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+    GPS_OPTIONS
   );
 }
 
@@ -1119,6 +1126,9 @@ $('follow').onclick = () => {
     return;
   }
   startGpsWatch();
+  if (current && !current.isDemo && followState.following) {
+    map.setView(current.coords, Math.max(map.getZoom(), 15), { animate: true });
+  }
 };
 
 // Pick mode with cancel button & Escape support (M3/M4/m4)
