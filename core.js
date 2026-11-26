@@ -11,7 +11,13 @@ export const GPS_OPTIONS = { enableHighAccuracy: true, maximumAge: 0, timeout: 1
 export function selectGpsFix(previous, next) {
   if (!next || !next.coords?.every(Number.isFinite) || next.coords.length !== 2 ||
       Math.abs(next.coords[0]) > 90 || Math.abs(next.coords[1]) > 180 ||
-      !Number.isFinite(next.accuracy) || next.accuracy < 0 || !Number.isFinite(next.timestamp)) return previous;
+      (Number.isFinite(next.accuracy) && next.accuracy < 0)) return previous;
+  if (!Number.isFinite(next.accuracy) || !Number.isFinite(next.timestamp)) {
+    next = { ...next,
+      accuracy: Number.isFinite(next.accuracy) ? next.accuracy : 999,
+      timestamp: Number.isFinite(next.timestamp) ? next.timestamp : Date.now(),
+    };
+  }
   if (!previous) return next;
   const elapsed = next.timestamp - previous.timestamp;
   if (elapsed < -5000) return previous;

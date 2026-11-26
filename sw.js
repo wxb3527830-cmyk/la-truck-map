@@ -1,5 +1,5 @@
 // Only cache our shell + data. No bulk map tile download, external API response or key caching.
-const CACHE='la-truck-v1-14';
+const CACHE='la-truck-v1-15';
 const FILES=['./','./index.html','./style.css','./app.js','./core.js','./storage.js','./config.js','./vendor/leaflet.js','./vendor/leaflet.css','./data/osm-snapshot.json','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-maskable.png'];
 const OPTIONAL_FILES=['./data/truck-ok-roads.json'];
 const ALL_CACHED=[...FILES,...OPTIONAL_FILES];

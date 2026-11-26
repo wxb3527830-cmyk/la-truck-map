@@ -664,3 +664,12 @@ footer { min-height:0; }
   box-shadow:0 2px 8px #20304025;
 }
 .leaflet-control-attribution { margin-bottom:calc(34px + env(safe-area-inset-bottom)) !important; }
+
+/* Immediate, readable route feedback, including iOS GPS waits. */
+#route-btn[aria-busy="true"] { background:#1558b0; font-weight:700; }
+#route-status.route-loading, #route-status.route-blocked, #route-status.route-unavailable {
+  font-size:15px; font-weight:600; padding:10px 12px; border-radius:12px;
+}
+#route-status.route-loading { background:#e8f0fe; color:#174ea6; }
+#route-status.route-blocked, #route-status.route-unavailable { background:#fce8e6; color:#a61b1b; }
+#route-pick-start { width:100%; margin-top:10px; min-height:44px; font-size:15px; color:#174ea6; background:#e8f0fe; }

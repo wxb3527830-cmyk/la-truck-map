@@ -117,6 +117,8 @@ let destinationPin = null;
 let routeBusy = false;
 let queuedPlan = false;
 let pendingGpsPlan = false;
+let gpsPlanTimer = null;
+const GPS_PLAN_TIMEOUT_MS = 10000; // WebKit may never deliver either geolocation callback.
 let restrictionsReady = false;
 let routeEpoch = 0;
 let lastReroute = 0;
@@ -702,6 +704,7 @@ function setRouteStatus(text, mode = 'normal', title = '') {
   const el = $('route-status');
   const txt = $('route-status-text');
   const titleEl = el?.querySelector('.route-banner-title');
+  el.classList.toggle('route-loading', mode === 'loading');
   el.classList.toggle('route-blocked', mode === 'blocked');
   el.classList.toggle('route-unavailable', mode === 'unavailable');
   if (titleEl) {
@@ -1035,9 +1038,14 @@ map.on('dragstart', () => {
   syncFollowUI();
 });
 
-function setPosition(coords, heading = null, accuracy = 0, isDemo = false, timestamp = Date.now()) {
-  const next = { coords, heading, accuracy, isDemo, timestamp };
-  if (!isDemo && selectGpsFix(current?.isDemo ? null : current, next) !== next) return;
+function setPosition(coords, heading = null, accuracy = null, isDemo = false, timestamp = null) {
+  let next = { coords, heading, accuracy, isDemo, timestamp };
+  if (!isDemo) {
+    const previous = current?.isDemo ? null : current;
+    next = selectGpsFix(previous, next);
+    if (!next || next === previous) return;
+    accuracy = next.accuracy;
+  }
   current = next;
   if (pendingGpsPlan && !isDemo) {
     pendingGpsPlan = false;
@@ -1077,37 +1085,62 @@ function setPosition(coords, heading = null, accuracy = 0, isDemo = false, times
   }
 }
 
-function startGpsWatch() {
+function setPlanningUi(loading) {
+  const button = $('route-btn');
+  button.disabled = false; // Repeated taps refresh feedback and queue a new plan.
+  button.textContent = loading ? '正在规划…' : '规划卡车路线';
+  button.setAttribute('aria-busy', String(loading));
+}
+
+function finishGpsWait() {
+  clearTimeout(gpsPlanTimer);
+  gpsPlanTimer = null;
+  $('route-pick-start').hidden = true;
+  setPlanningUi(routeBusy);
+}
+
+function gpsPlanFailed() {
+  clearTimeout(gpsPlanTimer);
+  gpsPlanTimer = null;
+  // Keep pendingGpsPlan and the watch: a late valid fix can still auto-plan.
+  if (!pendingGpsPlan || origin) return;
+  setPlanningUi(routeBusy);
+  $('route-pick-start').hidden = false;
+  setRouteStatus('定位未成功，请允许定位，或点下方按钮在地图上点选起点；也可在「更多」手动填写起点。', 'blocked');
+}
+
+function startGpsWatch(requestOnce = false) {
   if (!window.isSecureContext || !navigator.geolocation) {
     followState = { mode: 'idle', following: false };
     syncFollowUI();
-    pendingGpsPlan = false;
-    setRouteStatus('定位不可用，请在「更多」地图点选或手动填写起点。');
-    $('location-status').textContent = '此连接不支持定位：请用 localhost 或可信 HTTPS。可用演示位置 / 地图点选起点。';
+    gpsPlanFailed();
+    $('location-status').textContent = '此连接不支持定位：请用 localhost 或可信 HTTPS。可用地图点选起点。';
     return;
   }
   followState = { mode: 'gps', following: true };
   syncFollowUI();
-  if (watch !== null) return;
-  watch = navigator.geolocation.watchPosition(
-    p => setPosition([p.coords.latitude, p.coords.longitude], p.coords.heading, p.coords.accuracy, false, p.timestamp ?? Date.now()),
-    err => {
+  const success = p => setPosition([p.coords.latitude, p.coords.longitude], p.coords.heading, p.coords.accuracy, false, p.timestamp);
+  const failure = err => {
+    // A transient timeout must not discard a watch that can deliver a late fix.
+    if (err.code === 1) {
       if (watch !== null) navigator.geolocation.clearWatch(watch);
       watch = null;
       followState = { mode: 'idle', following: false };
       syncFollowUI();
-      pendingGpsPlan = false;
-      const deniedText = '定位未成功，可以在「更多」地图点选或手动填写起点。';
-      setRouteStatus(deniedText);
-      notify(deniedText, { level: 'info' });
-      $('location-status').textContent = ({
-        1: '定位权限被拒绝。请在浏览器设置允许定位，或使用演示位置 / 地图点选。',
-        2: '暂时无法获取位置，请使用演示位置或稍后重试。',
-        3: '定位超时，请重试或使用演示位置。',
-      })[err.code] || '定位失败。';
-    },
-    GPS_OPTIONS
-  );
+    }
+    gpsPlanFailed();
+    $('location-status').textContent = ({
+      1: '定位权限被拒绝。请在浏览器设置允许定位，或地图点选起点。',
+      2: '暂时无法获取位置，请地图点选起点或稍后重试。',
+      3: '定位超时，仍在等待位置；可地图点选起点。',
+    })[err.code] || '定位失败，请地图点选起点。';
+  };
+  try {
+    if (watch === null) watch = navigator.geolocation.watchPosition(success, failure, GPS_OPTIONS);
+    if (requestOnce) navigator.geolocation.getCurrentPosition?.(success, failure, GPS_OPTIONS);
+  } catch {
+    failure({ code: 2 });
+  }
 }
 
 $('follow').onclick = () => {
@@ -1158,17 +1191,19 @@ document.addEventListener('keydown', e => {
 });
 
 $('pick-start').onclick = () => enterPick('start');
+$('route-pick-start').onclick = () => enterPick('start');
 $('add-marker').onclick = () => enterPick('edit');
 $('new-edit').onclick = () => enterPick('edit');
 
 function setEndpoint(type, coords, name) {
   invalidateRoute();
   const isStart = type === 'origin';
-  if (isStart) pendingGpsPlan = false;
+  if (isStart) { pendingGpsPlan = false; finishGpsWait(); }
   const icon = L.divIcon({ className: 'endpoint-icon', html: `<div class="endpoint-pin ${isStart ? 'start' : 'end'}">${isStart ? '起' : '终'}</div>`, iconSize: [36, 44], iconAnchor: [18, 44] });
   const pin = L.marker(coords, { icon, draggable: true, zIndexOffset: 600 }).addTo(map).bindTooltip(isStart ? '起点 · 可拖动' : '终点 · 可拖动');
   pin.on('dragstart', () => {
     pendingGpsPlan = false;
+    finishGpsWait();
     invalidateRoute();
     setRouteStatus('位置已改变，请点击「规划卡车路线」重新校验。');
   });
@@ -1212,6 +1247,7 @@ map.on('click', e => {
     syncFollowUI();
     setPosition(p, null, 0, true);
     setEndpoint('origin', p, `地图起点 ${p.map(n => n.toFixed(5)).join(', ')}`);
+    if (destination) planRoute();
   }
 });
 
@@ -1518,23 +1554,42 @@ function fitRouteBounds(coords) {
   }
   const card = document.querySelector('.route-card').getBoundingClientRect();
   const bounds = L.latLngBounds([...coords, origin, destination].filter(Boolean));
+  const gapTop = Math.max(0, Math.min(top, rect.height));
+  const gapBottom = Math.max(gapTop + 1, Math.min(rect.height, card.top - rect.top));
+  const gap = gapBottom - gapTop;
+  const extraTop = Math.min(68, gap * 0.22);
+  const extraBottom = Math.min(24, gap * 0.10);
   map.fitBounds(bounds, {
-    paddingTopLeft: [44, top + 68],
-    paddingBottomRight: [44, rect.bottom - card.top + 24],
+    paddingTopLeft: [Math.min(44, rect.width * 0.12), gapTop + extraTop],
+    paddingBottomRight: [Math.min(44, rect.width * 0.12), rect.height - gapBottom + extraBottom],
     maxZoom: 16,
     animate: false,
   });
 }
 
 async function planRoute(auto = false) {
+  if (!auto) {
+    setPlanningUi(true);
+    setRouteStatus('正在规划卡车路线…', 'loading');
+  }
   if (routeBusy) { if (!auto) queuedPlan = true; return; }
-  if (!destination) { setRouteStatus('请先在顶部搜索目的地。'); return; }
+  if (!destination) { setPlanningUi(false); setRouteStatus('请先在顶部搜索目的地。', 'blocked'); return; }
   if (!origin) {
     if (current && !current.isDemo) setEndpoint('origin', current.coords, '当前位置');
-    else { pendingGpsPlan = true; setRouteStatus('正在获取当前位置；若未允许定位，可在「更多」设置起点。'); startGpsWatch(); return; }
+    else {
+      pendingGpsPlan = true;
+      setPlanningUi(true);
+      $('route-pick-start').hidden = false;
+      setRouteStatus('正在获取当前位置并规划路线… 可点下方按钮在地图上选择起点。', 'loading');
+      // Repeated taps do not extend the deadline indefinitely.
+      if (gpsPlanTimer === null) gpsPlanTimer = setTimeout(gpsPlanFailed, GPS_PLAN_TIMEOUT_MS);
+      startGpsWatch(true);
+      return;
+    }
   }
-  if (!restrictionsReady) { setRouteStatus('限行数据仍在加载，请稍后再规划。'); return; }
+  if (!restrictionsReady) { setPlanningUi(false); setRouteStatus('限行数据仍在加载，请稍后再规划。', 'blocked'); return; }
   if (!getKey()) {
+    setPlanningUi(false);
     showKeyHint();
     const st = getRouteUnavailableState(false);
     setRouteStatus(st.message, 'unavailable', st.title);
@@ -1544,6 +1599,7 @@ async function planRoute(auto = false) {
   }
   const start = auto ? current?.coords : origin;
   if (!start || !destination) {
+    setPlanningUi(false);
     setRouteStatus('请先设置起点和终点（搜索结果可选择起终点，或点击「使用当前位置」/「在地图点选起点」）。', 'normal');
     if (!auto) notify('请先设置起点和终点再规划卡车路线。', { level: 'info' });
     return;
@@ -1552,8 +1608,8 @@ async function planRoute(auto = false) {
 
   const epoch = ++routeEpoch;
   routeBusy = true;
-  $('route-btn').disabled = true;
-  setRouteStatus(auto ? '偏离路线，正在重新规划…' : '正在请求 HeiGIT / ORS driving-hgv 卡车路线并校验禁行/限高…', 'normal');
+  setPlanningUi(true);
+  setRouteStatus(auto ? '偏离路线，正在重新规划…' : '正在请求卡车路线并校验禁行/限高…', 'loading');
 
   try {
     const eff = allRestrictions();
@@ -1567,7 +1623,7 @@ async function planRoute(auto = false) {
 
     // If first route hits a known restriction (e.g. outside initial 15 km ORS avoid box), retry focused on that conflict
     if (!safety.safe && safety.blocking.length) {
-      setRouteStatus('检测到候选路线经过已知限行，正在尝试重点绕行重算…', 'normal');
+      setRouteStatus('检测到候选路线经过已知限行，正在尝试重点绕行重算…', 'loading');
       try {
         const retryPlan = buildRoutePlan(start, destination, vehicle, eff, safety.blocking[0].point);
         const retryF = await requestOrsRoute(retryPlan.body);
@@ -1644,7 +1700,7 @@ async function planRoute(auto = false) {
     }
   } finally {
     routeBusy = false;
-    $('route-btn').disabled = false;
+    setPlanningUi(gpsPlanTimer !== null);
     if (queuedPlan) { queuedPlan = false; queueMicrotask(() => planRoute()); }
   }
 }
