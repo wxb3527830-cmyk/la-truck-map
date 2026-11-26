@@ -51,7 +51,7 @@ const $ = id => document.getElementById(id);
 const cfg = window.APP_CONFIG || {};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([34.025, -118.1], 10);
+const map = L.map('map', { zoomControl: true, preferCanvas: true, trackResize: false }).setView([34.025, -118.1], 10);
 window.__truckMap = map;
 pinVisibleViewport(map);
 $('inapp-hint').hidden = !isIosInAppBrowser(navigator.userAgent) || isStandalone(navigator, window.matchMedia.bind(window));

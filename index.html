@@ -17,27 +17,30 @@
 <main>
   <section class="map-shell" aria-label="限行地图">
     <div id="map"></div>
-    <div class="map-top">
-      <span class="live-dot"></span>
-      <span id="data-status" role="status">正在读取本地快照…</span>
-    </div>
-    <div id="inapp-hint" role="status" hidden><span>当前是应用内浏览器，显示和 GPS 可能受限。请用 Safari 打开本页，再「添加到主屏幕」。</span><button id="inapp-close" aria-label="关闭应用内浏览器提示">✕</button></div>
+    <div class="map-chrome">
     <div class="search-dock">
       <button id="menu-open" aria-label="更多工具" aria-expanded="false" aria-controls="tools-menu">☰</button>
       <input id="search" aria-label="搜索目的地" placeholder="搜索目的地 / 地址" maxlength="200" enterkeyhint="search">
       <button id="search-btn" aria-label="搜索目的地">⌕</button>
       <div id="search-results" aria-live="polite"></div>
     </div>
-    <div class="map-actions">
-      <p id="gps-accuracy-hint" role="status" hidden>定位不够准，请在 iPhone 设置中为 Safari（或当前浏览器）开启「精确位置」。</p>
-      <button id="follow" type="button">◎ 开启定位</button>
-      <button id="cancel-pick" type="button" hidden>✕ 取消选点</button>
+    <div class="map-top">
+      <span class="live-dot"></span>
+      <span id="data-status" role="status">正在读取本地快照…</span>
+    </div>
+    <div id="inapp-hint" role="status" hidden><span>当前是应用内浏览器，显示和 GPS 可能受限。请用 Safari 打开本页，再「添加到主屏幕」。</span><button id="inapp-close" aria-label="关闭应用内浏览器提示">✕</button></div>
     </div>
     <div class="alert-box alert-info" id="alert" role="alert" hidden>
       <span id="alert-text"></span>
       <button type="button" id="alert-close" class="alert-close" aria-label="关闭提示">✕</button>
     </div>
   </section>
+  <div class="bottom-chrome">
+    <div class="map-actions">
+      <p id="gps-accuracy-hint" role="status" hidden>定位不够准，请在 iPhone 设置中为 Safari（或当前浏览器）开启「精确位置」。</p>
+      <button id="follow" type="button">◎ 开启定位</button>
+      <button id="cancel-pick" type="button" hidden>✕ 取消选点</button>
+    </div>
   <section id="tab-route" class="route-card" aria-label="路线规划"><div class="route-heading"><span>↗ 卡车路线</span><input id="destination" readonly aria-label="已选目的地" placeholder="先搜索目的地"></div>      <button id="route-btn" type="button" class="primary">规划卡车路线</button>
       <button id="stop-nav" type="button" hidden>结束导航</button>
       <div id="route-status" class="notice" role="status">
@@ -49,7 +52,7 @@
       <p id="gps-notice" role="status" hidden></p>
       <ol id="turns"></ol>
     </section>
-
+  </div>
 
   <aside id="tools-menu" aria-label="更多工具" hidden>
     <div class="menu-heading"><strong>更多工具</strong><button id="menu-close" aria-label="关闭更多工具">✕</button></div>
