@@ -1,3 +1,4 @@
+import { pinVisibleViewport, isIosInAppBrowser } from './viewport.js';
 import {
   effectiveOrsKey, GPS_OPTIONS, selectGpsFix,
   BBOX, OVERPASS_FETCH_TIMEOUT_MS, usableOverpassElements, rankPhotonResults, isStandalone, keySaveFeedback, KEY_INSTALL_HINT, refreshFailureStatus,
@@ -52,6 +53,13 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 const map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([34.025, -118.1], 10);
 window.__truckMap = map;
+pinVisibleViewport(map);
+$('inapp-hint').hidden = !isIosInAppBrowser(navigator.userAgent) || isStandalone(navigator, window.matchMedia.bind(window));
+$('inapp-close').onclick = () => { $('inapp-hint').hidden = true; };
+if (!window.isSecureContext || !navigator.geolocation) {
+  $('gps-notice').hidden = false;
+  $('gps-notice').textContent = '当前浏览器无法使用 GPS。请用 Safari 和可信 HTTPS 打开，或在「更多」中地图点选起点。';
+}
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   className: 'muted-basemap-tiles',
@@ -1047,6 +1055,7 @@ function setPosition(coords, heading = null, accuracy = null, isDemo = false, ti
     accuracy = next.accuracy;
   }
   current = next;
+  if (!isDemo) $('gps-notice').hidden = true;
   if (pendingGpsPlan && !isDemo) {
     pendingGpsPlan = false;
     setEndpoint('origin', coords, '当前位置');
@@ -1106,6 +1115,8 @@ function gpsPlanFailed() {
   if (!pendingGpsPlan || origin) return;
   setPlanningUi(routeBusy);
   $('route-pick-start').hidden = false;
+  $('gps-notice').hidden = false;
+  $('gps-notice').textContent = 'GPS 暂不可用，请允许定位，或点下方按钮选择起点。';
   setRouteStatus('定位未成功，请允许定位，或点下方按钮在地图上点选起点；也可在「更多」手动填写起点。', 'blocked');
 }
 
@@ -1115,6 +1126,8 @@ function startGpsWatch(requestOnce = false) {
     syncFollowUI();
     gpsPlanFailed();
     $('location-status').textContent = '此连接不支持定位：请用 localhost 或可信 HTTPS。可用地图点选起点。';
+    $('gps-notice').hidden = false;
+    $('gps-notice').textContent = '当前浏览器无法使用 GPS。请用 Safari 和可信 HTTPS 打开，或在「更多」中地图点选起点。';
     return;
   }
   followState = { mode: 'gps', following: true };
@@ -1134,6 +1147,8 @@ function startGpsWatch(requestOnce = false) {
       2: '暂时无法获取位置，请地图点选起点或稍后重试。',
       3: '定位超时，仍在等待位置；可地图点选起点。',
     })[err.code] || '定位失败，请地图点选起点。';
+    $('gps-notice').hidden = false;
+    $('gps-notice').textContent = $('location-status').textContent;
   };
   try {
     if (watch === null) watch = navigator.geolocation.watchPosition(success, failure, GPS_OPTIONS);
@@ -1573,7 +1588,12 @@ async function planRoute(auto = false) {
     setRouteStatus('正在规划卡车路线…', 'loading');
   }
   if (routeBusy) { if (!auto) queuedPlan = true; return; }
-  if (!destination) { setPlanningUi(false); setRouteStatus('请先在顶部搜索目的地。', 'blocked'); return; }
+  if (!destination) {
+    setPlanningUi(false);
+    setRouteStatus('请先搜索目的地：已打开上方搜索框，输入地址后点放大镜。', 'blocked');
+    $('search').focus({ preventScroll: true });
+    return;
+  }
   if (!origin) {
     if (current && !current.isDemo) setEndpoint('origin', current.coords, '当前位置');
     else {

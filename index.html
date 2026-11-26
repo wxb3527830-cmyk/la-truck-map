@@ -21,6 +21,7 @@
       <span class="live-dot"></span>
       <span id="data-status" role="status">正在读取本地快照…</span>
     </div>
+    <div id="inapp-hint" role="status" hidden><span>当前是应用内浏览器，显示和 GPS 可能受限。请用 Safari 打开本页，再「添加到主屏幕」。</span><button id="inapp-close" aria-label="关闭应用内浏览器提示">✕</button></div>
     <div class="search-dock">
       <button id="menu-open" aria-label="更多工具" aria-expanded="false" aria-controls="tools-menu">☰</button>
       <input id="search" aria-label="搜索目的地" placeholder="搜索目的地 / 地址" maxlength="200" enterkeyhint="search">
@@ -45,6 +46,7 @@
       </div>
       <button id="route-pick-start" type="button" hidden>在地图上点选起点</button>
       <button id="goto-ors-settings" type="button" class="goto-settings-btn" hidden>前往「设置」填入免费 ORS API Key →</button>
+      <p id="gps-notice" role="status" hidden></p>
       <ol id="turns"></ol>
     </section>
 
@@ -170,8 +172,8 @@
       <p class="hint">底图需要网络。离线可打开应用、车辆资料、已缓存限行和本机标记；不提供离线底图。</p>
     </section>
   </aside>
-</main>
 <footer>仅供参考 · 无实时路况 · 以路牌和专业卡车导航为准</footer>
+</main>
 
 <dialog id="edit-dialog">
   <form id="edit-form">

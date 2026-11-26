@@ -559,7 +559,7 @@ dialog::backdrop { background: rgba(20, 56, 48, .48); }
     padding: 8px;
     gap: 10px;
   }
-  .map-shell { height: 68dvh; min-height: 440px; border-radius: 14px; }
+  .map-shell { height: 100%; min-height: 0; border-radius: 0; }
   aside { padding: 6px 8px 20px; overflow: visible; }
   .panel-title h1 { font-size: 21px; }
   .map-top { top: 10px; left: 52px; right: 10px; padding: 8px 10px; font-size: 11.5px; }
@@ -575,7 +575,7 @@ dialog::backdrop { background: rgba(20, 56, 48, .48); }
   .legend i { width: 22px; height: 9px; }
   .legend small { font-size: 11px; line-height: 1.35; }
   .map-actions { left: 10px; right: 10px; bottom: 14px; gap: 6px; }
-  .map-actions button { font-size: 12px; padding: 8px 6px; flex: 1; white-space: nowrap; min-height: 44px; }
+  .map-actions button { font-size: 12px; padding: 8px 6px; flex: none; white-space: normal; min-height: 44px; }
   /* Fixed to viewport on mobile so alerts stay visible when scrolled to lower panels (M3) */
   .alert-box {
     position: fixed;
@@ -621,7 +621,7 @@ main { display:block; position:relative; width:100%; height:100dvh; min-height:0
 .result button { font-size:14px; width:auto; color:#1a73e8; white-space:nowrap; }
 .map-top { top:calc(84px + env(safe-area-inset-top)); left:18px; right:18px; width:fit-content; max-width:calc(100% - 36px); padding:7px 11px; border:0; border-radius:12px; font-size:11px; background:#fffffff2; box-shadow:0 1px 5px #20304016; pointer-events:none; }
 .live-dot { display:none; }
-.map-actions { left:auto; right:16px; bottom:265px; top:auto; display:flex; flex-direction:column; gap:8px; }
+.map-actions { left:auto; right:16px; bottom:calc(var(--card-bottom-space, 220px) + 10px); top:auto; display:flex; flex-direction:column; gap:8px; }
 .map-actions button { border:0; border-radius:24px; color:#1967d2; box-shadow:0 2px 8px #20304025; background:white; }
 .leaflet-top.leaflet-left { top:130px; left:4px; }
 .route-card { position:absolute; z-index:1050; bottom:calc(42px + env(safe-area-inset-bottom)); left:12px; right:12px; max-width:460px; background:white; border-radius:24px; box-shadow:0 3px 20px #20304030; padding:16px; max-height:40dvh; overflow:auto; }
@@ -673,3 +673,36 @@ footer { min-height:0; }
 #route-status.route-loading { background:#e8f0fe; color:#174ea6; }
 #route-status.route-blocked, #route-status.route-unavailable { background:#fce8e6; color:#a61b1b; }
 #route-pick-start { width:100%; margin-top:10px; min-height:44px; font-size:15px; color:#174ea6; background:#e8f0fe; }
+
+/* All fixed chrome shares the visual viewport coordinate system, including the keyboard. */
+html, body { position:fixed; inset:0; width:100%; height:100%; overflow:hidden; overscroll-behavior:none; }
+main {
+  position:fixed; top:var(--view-top, 0px); left:var(--view-left, 0px);
+  width:var(--view-width, 100%); height:var(--view-height, 100dvh);
+  overflow:hidden;
+  --edge-left: max(12px, env(safe-area-inset-left));
+  --edge-right: max(12px, env(safe-area-inset-right));
+}
+.search-dock { top:max(10px, env(safe-area-inset-top)); left:var(--edge-left); right:var(--edge-right); }
+.map-top { top:calc(var(--dock-bottom, 68px) + 8px); left:var(--edge-left); right:var(--edge-right); width:auto; max-width:460px; line-height:1.4; overflow-wrap:anywhere; }
+#inapp-hint { position:absolute; z-index:1100; top:calc(var(--status-bottom, 110px) + 6px); left:var(--edge-left); right:var(--edge-right); max-width:460px; display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:12px; background:#fff8df; color:#644300; font-size:12px; line-height:1.4; }
+#inapp-hint span { min-width:0; }
+#inapp-close { flex:none; border:0; padding:4px; min-width:44px; background:transparent; }
+.route-card { left:var(--edge-left); right:var(--edge-right); bottom:calc(var(--footer-height, 34px) + 8px); max-height:calc(var(--view-height, 100dvh) * .38); overscroll-behavior:contain; padding:12px; }
+.map-actions { left:auto; right:var(--edge-right); bottom:calc(var(--card-bottom-space, 220px) + 10px); width:max-content; max-width:calc(100% - var(--edge-left) - var(--edge-right)); flex-wrap:nowrap; }
+.map-actions button { flex:none; min-width:0; max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+.leaflet-top.leaflet-left { top:calc(var(--header-bottom, 118px) + 8px); left:var(--edge-left); }
+.alert-box { top:calc(var(--header-bottom, 118px) + 8px); left:calc(var(--edge-left) + 44px); right:var(--edge-right); max-width:416px; max-height:min(130px, calc(var(--view-height, 100dvh) * .22)); }
+footer { position:absolute; left:0; right:0; bottom:0; height:auto; min-height:34px; padding:6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); line-height:16px; }
+aside#tools-menu { position:absolute; top:max(10px, env(safe-area-inset-top)); left:var(--edge-left); width:min(440px, calc(100% - var(--edge-left) - var(--edge-right))); bottom:calc(var(--footer-height, 34px) + 8px); overscroll-behavior:contain; }
+#search-results { max-height:calc(var(--view-height, 100dvh) * .42); }
+#destination, input, select, textarea { font-size:16px; }
+#gps-notice { margin:8px 0 0; font-size:13px; line-height:1.4; color:#8a3800; }
+#gps-accuracy-hint { width:min(280px, calc(var(--view-width, 100vw) - 32px)); max-height:calc(var(--view-height, 100dvh) * .18); overflow:auto; }
+/* Keyboard shrink may leave the layout viewport unchanged: use measured height. */
+main[data-compact="true"] .search-dock { height:48px; }
+main[data-compact="true"] #inapp-hint { display:none; }
+main[data-compact="true"] .leaflet-control-zoom { display:flex; }
+main[data-compact="true"] .leaflet-control-zoom a:first-child { border-bottom:0; border-right:1px solid #ccc; }
+main[data-compact="true"] .route-card { max-height:calc(var(--view-height, 100dvh) * .36); }
+main[data-compact="true"] .map-top { font-size:10px; padding:4px 8px; }
