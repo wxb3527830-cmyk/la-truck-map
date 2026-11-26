@@ -34,6 +34,14 @@ import {
   onMapDrag,
   onFollowClick,
   formatDataStatus,
+  decodeTruckOkRoads,
+  filterTruckOkRoads,
+  truckOkStyleForZoom,
+  TRUCK_OK_CLASS_LABELS,
+  ORS_DIRECTIONS_URL,
+  getRouteUnavailableState,
+  plannedRouteStyles,
+  formatRouteError,
 } from './core.js';
 import { read, write, createEditStore } from './storage.js';
 
@@ -45,8 +53,14 @@ const map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([34.
 window.__truckMap = map;
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
+  className: 'muted-basemap-tiles',
   attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
 }).addTo(map);
+
+// Dedicated pane below overlayPane (400) so green truck-OK roads NEVER obscure red restricted lines or routes
+const truckOkPane = map.createPane('truckOkPane');
+truckOkPane.style.zIndex = '380';
+const truckOkRenderer = L.canvas({ pane: 'truckOkPane', padding: 0.35 });
 
 // Lift Leaflet's popupPane out of .leaflet-map-pane's z-index:400/transform stacking context
 // into a top-level host inside #map (z-index: 1250) mirrored to _mapPane transforms,
@@ -66,6 +80,7 @@ syncPopupTransform();
 new MutationObserver(syncPopupTransform).observe(mapPane, { attributes: true, attributeFilter: ['style', 'class'] });
 map.on('move zoom viewreset popupopen', syncPopupTransform);
 
+const truckOkLayer = L.layerGroup().addTo(map);
 const osmLayer = L.layerGroup().addTo(map);
 const labelLayer = L.layerGroup().addTo(map);
 const editLayer = L.layerGroup().addTo(map);
@@ -74,6 +89,9 @@ const routeLayer = L.layerGroup().addTo(map);
 let rawElements = [];
 let rawJunctions = {};
 let features = [];
+let rawTruckOkRoads = [];
+let filteredTruckOkRoads = [];
+let lastOsmZoomBucket = -1;
 let edits = read('edits', []).filter(validEdit);
 const initialProfileMigration = migrateVehicleProfile(read('profile', {}));
 let profileRaw = initialProfileMigration.profile;
@@ -242,8 +260,8 @@ function getBadgeDescriptor(entry) {
     return {
       latlng: mid,
       priority: 1,
-      width: 92,
-      height: 24,
+      width: 118,
+      height: 30,
       html: `<div class="override-pill">✓ 司机标可通</div>`,
       entry,
     };
@@ -261,12 +279,12 @@ function getBadgeDescriptor(entry) {
     const isDriver = Boolean(h.driverOverride);
     const hBlocked = relevant(h, vehicle);
     const cls = isDriver ? 'driver' : (hBlocked ? 'blocked' : 'clear');
-    const prefix = isDriver ? '纠偏 ' : '';
+    const prefix = isDriver ? '纠偏 ' : '↕ ';
     return {
       latlng: mid,
       priority: isDriver ? 0 : (hBlocked ? 2 : 4),
-      width: isDriver ? 86 : 58,
-      height: 24,
+      width: isDriver ? 112 : 84,
+      height: 32,
       html: `<div class="h-pill ${cls}">${prefix}${esc(b.imperial)}</div>`,
       entry,
     };
@@ -280,8 +298,8 @@ function getBadgeDescriptor(entry) {
     return {
       latlng: mid,
       priority: isDriver ? 0 : (isCond ? 3 : 1),
-      width: 82,
-      height: 24,
+      width: 104,
+      height: 32,
       html: `<div class="ban-pill ${cls}">${txt}</div>`,
       entry,
     };
@@ -293,8 +311,8 @@ function getBadgeDescriptor(entry) {
     return {
       latlng: mid,
       priority: blocked ? 4 : 6,
-      width: 102,
-      height: 22,
+      width: 132,
+      height: 30,
       html: `<div class="weight-pill">限重 ${esc(lbsTxt)}</div>`,
       entry,
     };
@@ -358,9 +376,96 @@ function renderLabels() {
   }
 }
 
+function osmZoomBucket(z) {
+  if (z >= 15) return 3;
+  if (z >= 13) return 2;
+  if (z >= 11) return 1;
+  return 0;
+}
+
+function buildTruckOkPopup(r) {
+  const div = document.createElement('div');
+  const title = r.name || '公共主干道';
+  const clsLabel = TRUCK_OK_CLASS_LABELS[r.highway] || r.highway;
+  div.innerHTML =
+    `<strong>${esc(title)}</strong>` +
+    `<br><b style="color:#15803d">✓ 正常通行（公共货车可走参考）</b>` +
+    `<br>道路等级：${esc(clsLabel)} (${esc(r.highway)})` +
+    `<br><small>基于 OSM 公共主干路网（已剔除已知禁行、限高、限重及内部通道）；不含临时施工或最新限行，请以现场路牌为准。</small>` +
+    `<br><a target="_blank" rel="noopener" href="https://www.openstreetmap.org/way/${r.osmId}">查看 OSM 原始数据</a>`;
+
+  const actions = document.createElement('div');
+  actions.className = 'popup-actions';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = '标记此路禁行 / 限行';
+  btn.onclick = () => {
+    map.closePopup();
+    const mid = featureMidpoint(r.coords) || r.coords[0];
+    openEdit({
+      lat: mid[0],
+      lng: mid[1],
+      type: 'cannot',
+      notes: '',
+      osmRef: r.osmRef,
+      osmFeatureId: r.id,
+      roadName: title,
+    });
+  };
+  actions.append(btn);
+  div.append(actions);
+  return div;
+}
+
+// Viewport-culled, zoom-tiered renderer for public truck-OK green roads.
+// Uses exact OSM way coordinates (`smoothFactor: 0`, `lineCap: 'butt'`) in `truckOkPane` (zIndex 380) beneath restrictions.
+function renderTruckOkRoads() {
+  truckOkLayer.clearLayers();
+  if (!filteredTruckOkRoads.length) return;
+  const zoom = map.getZoom();
+  if (zoom < 10) return;
+
+  const bounds = map.getBounds().pad(0.2);
+  const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
+
+  for (const r of filteredTruckOkRoads) {
+    if (zoom < r.minZoom) continue;
+    const [rs, rw, rn, re] = r.bbox;
+    if (rn < s || rs > n || re < w || rw > e) continue;
+    const st = truckOkStyleForZoom(r.highway, zoom);
+    if (!st.visible) continue;
+
+    if (st.haloWeight > 0) {
+      L.polyline(r.coords, {
+        color: '#ffffff',
+        weight: st.haloWeight,
+        opacity: 0.88,
+        interactive: false,
+        smoothFactor: 0,
+        lineCap: 'butt',
+        pane: 'truckOkPane',
+        renderer: truckOkRenderer,
+      }).addTo(truckOkLayer);
+    }
+
+    const line = L.polyline(r.coords, {
+      color: '#22c55e',
+      weight: st.weight,
+      opacity: st.opacity,
+      smoothFactor: 0,
+      lineCap: 'butt',
+      pane: 'truckOkPane',
+      renderer: truckOkRenderer,
+    });
+    line.bindPopup(() => buildTruckOkPopup(r), POPUP_OPTS);
+    line.addTo(truckOkLayer);
+  }
+}
+
 function renderOSM() {
   osmLayer.clearLayers();
   const zoom = map.getZoom();
+  lastOsmZoomBucket = osmZoomBucket(zoom);
   const { osmEntries } = recomputeOverrides();
 
   for (const entry of osmEntries) {
@@ -369,11 +474,16 @@ function renderOSM() {
     const popupFn = () => buildOsmPopupElement(entry);
 
     if (overrideType === 'can') {
-      const layer = drawCoords.length === 1
-        ? L.circleMarker(drawCoords[0], { radius: 6, color: '#15803d', weight: 2, fillOpacity: 0.35 })
-        : L.polyline(drawCoords, { color: '#16a34a', weight: 4, opacity: 0.7, dashArray: '6 6', smoothFactor: 0, lineCap: 'butt' });
-      layer.bindPopup(popupFn, POPUP_OPTS);
-      layer.addTo(osmLayer);
+      if (drawCoords.length === 1) {
+        const layer = L.circleMarker(drawCoords[0], { radius: 8, color: '#15803d', weight: 2.5, fillOpacity: 0.45 });
+        layer.bindPopup(popupFn, POPUP_OPTS);
+        layer.addTo(osmLayer);
+      } else {
+        L.polyline(drawCoords, { color: '#ffffff', weight: 9, opacity: 0.9, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
+        const layer = L.polyline(drawCoords, { color: '#16a34a', weight: 5, opacity: 0.9, dashArray: '7 7', smoothFactor: 0, lineCap: 'butt' });
+        layer.bindPopup(popupFn, POPUP_OPTS);
+        layer.addTo(osmLayer);
+      }
       continue;
     }
 
@@ -385,13 +495,13 @@ function renderOSM() {
     const isDriver = overrideType === 'cannot' || overrideType === 'restriction';
 
     if (drawCoords.length === 1) {
-      const color = hasHardBan ? '#b91c1c' : hasHeight ? (blocked ? '#b91c1c' : '#0e5a6d') : '#d97706';
+      const color = hasHardBan ? '#dc2626' : hasHeight ? (blocked ? '#dc2626' : '#0369a1') : '#d97706';
       const dot = L.circleMarker(drawCoords[0], {
-        radius: blocked ? 8 : 5,
+        radius: blocked ? 10 : 7,
         color: '#ffffff',
-        weight: 2,
+        weight: 2.5,
         fillColor: color,
-        fillOpacity: 0.95,
+        fillOpacity: 0.98,
       });
       dot.bindPopup(popupFn, POPUP_OPTS);
       dot.addTo(osmLayer);
@@ -400,38 +510,39 @@ function renderOSM() {
 
     // Named public service roads render distinctly thinner than public through-roads (smoothFactor: 0, lineCap: 'butt').
     if (f.isServiceRoad) {
-      const color = hasHardBan ? '#9f1239' : hasHeight ? '#0e5a6d' : '#b45309';
-      const line = L.polyline(drawCoords, { color, weight: 3.5, opacity: 0.85, dashArray: '4 6', smoothFactor: 0, lineCap: 'butt' });
+      const color = hasHardBan ? '#be123c' : hasHeight ? '#0369a1' : '#b45309';
+      const line = L.polyline(drawCoords, { color, weight: 4.5, opacity: 0.9, dashArray: '5 6', smoothFactor: 0, lineCap: 'butt' });
       line.bindPopup(popupFn, POPUP_OPTS);
       line.addTo(osmLayer);
       continue;
     }
 
     if (hasHardBan) {
-      // Unmistakable high-contrast 3-layer No-Trucks styling: white halo + crimson core + yellow warning dashes
+      // Unmistakable high-contrast 3-layer No-Trucks styling: wide white halo + vivid crimson core + yellow warning dashes
       // Uses display-only curb-trimmed `drawCoords` + `lineCap: 'butt'` while canonical `f.coords` stays full for routing/alerts.
-      const baseW = zoom >= 13 ? 8 : 6;
-      L.polyline(drawCoords, { color: '#ffffff', weight: baseW + 5, opacity: 0.95, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
-      const core = L.polyline(drawCoords, { color: isDriver ? '#7e22ce' : '#b91c1c', weight: baseW, opacity: 0.98, smoothFactor: 0, lineCap: 'butt' });
+      const baseW = zoom >= 15 ? 11 : (zoom >= 13 ? 9.5 : 7);
+      L.polyline(drawCoords, { color: '#ffffff', weight: baseW + 6, opacity: 0.98, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
+      const core = L.polyline(drawCoords, { color: isDriver ? '#7e22ce' : '#dc2626', weight: baseW, opacity: 1, smoothFactor: 0, lineCap: 'butt' });
       core.bindPopup(popupFn, POPUP_OPTS);
       core.addTo(osmLayer);
-      L.polyline(drawCoords, { color: '#fef08a', weight: 2.5, dashArray: '8 10', opacity: 0.95, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
+      L.polyline(drawCoords, { color: '#fde047', weight: zoom >= 14 ? 3.5 : 3, dashArray: '9 10', opacity: 0.98, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
     } else if (hasCondBan) {
-      L.polyline(drawCoords, { color: '#ffffff', weight: 8, opacity: 0.9, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
-      const line = L.polyline(drawCoords, { color: '#c2410c', weight: 5, opacity: 0.95, dashArray: '8 6', smoothFactor: 0, lineCap: 'butt' });
+      L.polyline(drawCoords, { color: '#ffffff', weight: zoom >= 14 ? 11 : 9, opacity: 0.95, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
+      const line = L.polyline(drawCoords, { color: '#ea580c', weight: zoom >= 14 ? 7 : 5.5, opacity: 0.98, dashArray: '9 6', smoothFactor: 0, lineCap: 'butt' });
       line.bindPopup(popupFn, POPUP_OPTS);
       line.addTo(osmLayer);
     } else if (hasHeight) {
-      const color = isDriver ? '#6d28d9' : (blocked ? '#b91c1c' : '#0e5a6d');
-      if (blocked || isDriver) {
-        L.polyline(drawCoords, { color: '#ffffff', weight: 9, opacity: 0.9, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
-      }
-      const line = L.polyline(drawCoords, { color, weight: blocked || isDriver ? 5.5 : 3, opacity: blocked || isDriver ? 0.95 : 0.65, smoothFactor: 0, lineCap: 'butt' });
+      const color = isDriver ? '#6d28d9' : (blocked ? '#dc2626' : '#0369a1');
+      const haloW = blocked || isDriver ? (zoom >= 14 ? 12 : 10) : 8;
+      const lineW = blocked || isDriver ? (zoom >= 14 ? 7.5 : 6) : (zoom >= 14 ? 5 : 4);
+      L.polyline(drawCoords, { color: '#ffffff', weight: haloW, opacity: 0.92, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
+      const line = L.polyline(drawCoords, { color, weight: lineW, opacity: blocked || isDriver ? 0.98 : 0.9, smoothFactor: 0, lineCap: 'butt' });
       line.bindPopup(popupFn, POPUP_OPTS);
       line.addTo(osmLayer);
     } else {
       const color = isDriver ? '#6d28d9' : '#d97706';
-      const line = L.polyline(drawCoords, { color, weight: blocked ? 5 : 2.5, opacity: blocked ? 0.9 : 0.55, smoothFactor: 0, lineCap: 'butt' });
+      L.polyline(drawCoords, { color: '#ffffff', weight: blocked ? 11 : 8, opacity: 0.9, interactive: false, smoothFactor: 0, lineCap: 'butt' }).addTo(osmLayer);
+      const line = L.polyline(drawCoords, { color, weight: blocked ? 7 : 4.5, opacity: blocked ? 0.96 : 0.88, smoothFactor: 0, lineCap: 'butt' });
       line.bindPopup(popupFn, POPUP_OPTS);
       line.addTo(osmLayer);
     }
@@ -486,7 +597,7 @@ function renderEdits() {
   for (const e of edits) {
     const html = driverBadgeHtml(e);
     const marker = L.marker([e.lat, e.lng], {
-      icon: L.divIcon({ className: 'map-badge', html, iconSize: [110, 26], iconAnchor: [55, 13] }),
+      icon: L.divIcon({ className: 'map-badge', html, iconSize: [130, 32], iconAnchor: [65, 16] }),
       zIndexOffset: 400,
     }).addTo(editLayer);
 
@@ -549,11 +660,40 @@ function renderEdits() {
 }
 
 function renderAll() {
+  filteredTruckOkRoads = filterTruckOkRoads(rawTruckOkRoads, features, edits);
+  renderTruckOkRoads();
   renderOSM();
   renderEdits();
 }
 
-map.on('moveend zoomend', renderLabels);
+map.on('moveend zoomend', () => {
+  renderTruckOkRoads();
+  if (osmZoomBucket(map.getZoom()) !== lastOsmZoomBucket) {
+    renderOSM();
+  } else {
+    renderLabels();
+  }
+});
+
+function setRouteStatus(text, mode = 'normal', title = '') {
+  const el = $('route-status');
+  const txt = $('route-status-text');
+  const titleEl = el?.querySelector('.route-banner-title');
+  el.classList.toggle('route-blocked', mode === 'blocked');
+  el.classList.toggle('route-unavailable', mode === 'unavailable');
+  if (titleEl) {
+    titleEl.textContent = title ? `⚠ ${title}` : '';
+    titleEl.hidden = !title;
+  }
+  if (txt) {
+    txt.textContent = text;
+  } else {
+    el.textContent = title ? `${title}：${text}` : text;
+  }
+  if ($('goto-ors-settings')) {
+    $('goto-ors-settings').hidden = mode !== 'unavailable';
+  }
+}
 
 function stopNavigation(message = '导航已结束。') {
   route = null;
@@ -561,8 +701,11 @@ function stopNavigation(message = '导航已结束。') {
   routeLayer.clearLayers();
   $('turns').replaceChildren();
   $('stop-nav').hidden = true;
-  $('route-status').classList.remove('route-blocked');
-  $('route-status').textContent = message;
+  if (!getKey()) {
+    keyStatus();
+  } else {
+    setRouteStatus(message, 'normal');
+  }
   offCount = 0;
   turnSpoken.clear();
 }
@@ -637,7 +780,21 @@ async function fetchOverpassResilient() {
   };
 }
 
+async function loadTruckOkRoads() {
+  try {
+    const r = await fetch('./data/truck-ok-roads.json');
+    if (!r.ok) return;
+    const data = await r.json();
+    rawTruckOkRoads = decodeTruckOkRoads(data);
+    filteredTruckOkRoads = filterTruckOkRoads(rawTruckOkRoads, features, edits);
+    renderTruckOkRoads();
+  } catch {
+    // Non-fatal: restriction layer remains fully functional even if optional green road file is unavailable
+  }
+}
+
 async function loadData() {
+  loadTruckOkRoads();
   try {
     const snap = await fetch('./data/osm-snapshot.json').then(r => { if (!r.ok) throw Error(); return r.json(); });
     const snapFeatures = fromOverpass(snap);
@@ -809,20 +966,27 @@ $('test-alert').onclick = () => {
 $('ors-key').value = read('ors-key', '') || cfg.orsKey || '';
 const getKey = () => read('ors-key', '') || cfg.orsKey || '';
 function keyStatus() {
-  if (getKey()) {
-    $('route-status').textContent = 'ORS 密钥已在本机配置。请选择起终点规划卡车路线（路线将校验已知禁行与限高，但仍仅供参考）。';
-  }
+  const st = getRouteUnavailableState(Boolean(getKey()));
+  setRouteStatus(st.message, st.available ? 'normal' : 'unavailable', st.title);
 }
 keyStatus();
+if ($('goto-ors-settings')) {
+  $('goto-ors-settings').onclick = () => {
+    tab('settings');
+    $('ors-key').focus();
+  };
+}
 
 $('ors-form').onsubmit = e => {
   e.preventDefault();
   write('ors-key', $('ors-key').value.trim());
   invalidateRoute();
-  $('route-status').textContent = getKey()
-    ? '密钥已保存至本机（未联网验证）。请选择起终点规划。'
-    : '未配置 ORS 密钥：可查看限高标牌、禁行路段、定位、预警与司机纠偏；卡车路线暂不可用。';
-  notify(getKey() ? '密钥已保存至本机。' : '已清除本机密钥。', { level: 'info' });
+  if (getKey()) {
+    setRouteStatus('密钥已保存至本机（未联网验证）。请选择起终点规划卡车路线。', 'normal');
+  } else {
+    keyStatus();
+  }
+  notify(getKey() ? '密钥已保存至本机。' : '已清除本机密钥，卡车路线功能已暂停。', { level: 'info' });
 };
 
 // Follow button state machine (M2)
@@ -843,8 +1007,8 @@ function setPosition(coords, heading = null, accuracy = 0, isDemo = false) {
       icon: L.divIcon({
         className: 'truck-icon',
         html: '<div class="truck-pointer">▲</div>',
-        iconSize: [38, 38],
-        iconAnchor: [19, 19],
+        iconSize: [42, 42],
+        iconAnchor: [21, 21],
       }),
       zIndexOffset: 500,
     }).addTo(map);
@@ -945,16 +1109,17 @@ $('add-marker').onclick = () => enterPick('edit');
 $('new-edit').onclick = () => enterPick('edit');
 
 function setEndpoint(type, coords, name) {
+  const rs = plannedRouteStyles();
   if (type === 'origin') {
     origin = coords;
     $('origin').value = name;
     originPin?.remove();
-    originPin = L.circleMarker(coords, { radius: 9, color: '#144d42', fillOpacity: 0.85 }).addTo(map).bindTooltip('起点');
+    originPin = L.circleMarker(coords, rs.startPin).addTo(map).bindTooltip('起点');
   } else {
     destination = coords;
     $('destination').value = name;
     destinationPin?.remove();
-    destinationPin = L.circleMarker(coords, { radius: 9, color: '#b91c1c', fillOpacity: 0.85 }).addTo(map).bindTooltip('终点');
+    destinationPin = L.circleMarker(coords, rs.endPin).addTo(map).bindTooltip('终点');
   }
   invalidateRoute();
 }
@@ -1255,29 +1420,44 @@ function renderTurns(steps) {
 }
 
 async function requestOrsRoute(body) {
-  const r = await fetch('https://api.openrouteservice.org/v2/directions/driving-hgv/geojson', {
+  // Uses current HeiGIT OpenRouteService gateway (ORS_DIRECTIONS_URL) after 2026-11-24 domain migration.
+  const r = await fetch(ORS_DIRECTIONS_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: getKey() },
+    headers: {
+      Accept: 'application/json, application/geo+json',
+      'Content-Type': 'application/json',
+      Authorization: getKey(),
+    },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(25000),
   });
-  if (!r.ok) throw Error(`ORS HTTP ${r.status}，请检查密钥、额度或起终点附近限行`);
+  if (!r.ok) {
+    const err = Error(`ORS HTTP ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
   const data = await r.json();
   const f = data.features?.[0];
-  if (!f?.geometry?.coordinates?.length) throw Error('没有返回可用路线');
+  if (!f?.geometry?.coordinates?.length) {
+    const err = Error('没有返回可用路线');
+    err.status = 404;
+    throw err;
+  }
   return f;
 }
 
 async function planRoute(auto = false) {
   if (routeBusy) return;
   if (!getKey()) {
-    $('route-status').classList.remove('route-blocked');
-    $('route-status').textContent = '卡车路线需要免费的 OpenRouteService API Key。请在「设置」粘贴；地图限高、禁行、定位、预警及司机纠偏仍可正常使用。';
+    const st = getRouteUnavailableState(false);
+    setRouteStatus(st.message, 'unavailable', st.title);
+    if (!auto) notify(st.message, { level: 'warn' });
     return;
   }
   const start = auto ? current?.coords : origin;
   if (!start || !destination) {
-    $('route-status').textContent = '请先设置起点和终点（搜索结果可选择起终点）。';
+    setRouteStatus('请先设置起点和终点（搜索结果可选择起终点，或点击「使用当前位置」/「在地图点选起点」）。', 'normal');
+    if (!auto) notify('请先设置起点和终点再规划卡车路线。', { level: 'info' });
     return;
   }
   if (current?.isDemo && auto) return;
@@ -1285,8 +1465,7 @@ async function planRoute(auto = false) {
   const epoch = ++routeEpoch;
   routeBusy = true;
   $('route-btn').disabled = true;
-  $('route-status').classList.remove('route-blocked');
-  $('route-status').textContent = auto ? '偏离路线，正在重新规划…' : '正在请求 ORS driving-hgv 卡车路线并校验禁行/限高…';
+  setRouteStatus(auto ? '偏离路线，正在重新规划…' : '正在请求 HeiGIT / ORS driving-hgv 卡车路线并校验禁行/限高…', 'normal');
 
   try {
     const eff = allRestrictions();
@@ -1300,7 +1479,7 @@ async function planRoute(auto = false) {
 
     // If first route hits a known restriction (e.g. outside initial 15 km ORS avoid box), retry focused on that conflict
     if (!safety.safe && safety.blocking.length) {
-      $('route-status').textContent = '检测到候选路线经过已知限行，正在尝试重点绕行重算…';
+      setRouteStatus('检测到候选路线经过已知限行，正在尝试重点绕行重算…', 'normal');
       try {
         const retryPlan = buildRoutePlan(start, destination, vehicle, eff, safety.blocking[0].point);
         const retryF = await requestOrsRoute(retryPlan.body);
@@ -1326,29 +1505,37 @@ async function planRoute(auto = false) {
       $('turns').replaceChildren();
       $('stop-nav').hidden = true;
       // Show conflict locations in warning red dashed line so the driver sees WHY it was blocked
-      L.polyline(coords, { color: '#b91c1c', weight: 4, opacity: 0.7, dashArray: '8 8' }).addTo(routeLayer);
+      L.polyline(coords, { color: '#b91c1c', weight: 5, opacity: 0.78, dashArray: '8 8', smoothFactor: 0 }).addTo(routeLayer);
       for (const b of safety.blocking) {
-        L.circleMarker(b.point, { radius: 12, color: '#991b1b', fillColor: '#fef08a', fillOpacity: 0.9, weight: 3 })
+        L.circleMarker(b.point, { radius: 12, color: '#991b1b', fillColor: '#fef08a', fillOpacity: 0.95, weight: 3 })
           .bindTooltip(`阻断：${b.feature.tags?.name || '限行路段'} (${label(b.restriction)})`)
           .addTo(routeLayer);
       }
-      if (!auto) map.fitBounds(L.latLngBounds(coords), { padding: [35, 35] });
+      if (!auto) map.fitBounds(L.latLngBounds(coords), { padding: [45, 45] });
       const conflictSummary = safety.blocking
         .slice(0, 3)
         .map(b => `${b.feature.tags?.name || '限行点'}（${label(b.restriction)}）`)
         .join('；');
       const msg = `已拒绝不安全路线：候选路线经过 ${safety.blocking.length} 处已知禁行或超限路段（${conflictSummary}）。未启动导航，请调整起终点或使用专业卡车导航核实。`;
-      $('route-status').classList.add('route-blocked');
-      $('route-status').textContent = msg;
+      setRouteStatus(msg, 'blocked');
       notify(msg, { level: 'danger', voice: !auto });
       return;
     }
 
     route = { coords, steps };
     routeLayer.clearLayers();
-    L.polyline(coords, { color: '#17694f', weight: 8, opacity: 0.25 }).addTo(routeLayer);
-    L.polyline(coords, { color: '#147b64', weight: 4.5 }).addTo(routeLayer);
-    if (!auto) map.fitBounds(L.latLngBounds(coords), { padding: [35, 35] });
+    const rs = plannedRouteStyles();
+    L.polyline(coords, rs.casing).addTo(routeLayer);
+    L.polyline(coords, rs.line).addTo(routeLayer);
+    L.marker(coords[0], {
+      icon: L.divIcon({ className: 'map-badge', html: '<div class="route-pin-badge start">起</div>', iconSize: [30, 30], iconAnchor: [15, 15] }),
+      zIndexOffset: 450,
+    }).bindTooltip('路线起点').addTo(routeLayer);
+    L.marker(coords[coords.length - 1], {
+      icon: L.divIcon({ className: 'map-badge', html: '<div class="route-pin-badge end">终</div>', iconSize: [30, 30], iconAnchor: [15, 15] }),
+      zIndexOffset: 450,
+    }).bindTooltip('路线终点').addTo(routeLayer);
+    if (!auto) map.fitBounds(L.latLngBounds(coords), { padding: [45, 45] });
     renderTurns(steps);
     navStep = steps[0]?.type === 11 ? 1 : 0;
     offCount = 0;
@@ -1361,16 +1548,19 @@ async function planRoute(auto = false) {
     if (safety.turnaroundWarnings.length) notes.push(safety.turnaroundWarnings.join('；'));
     if (!vehicle.height || !vehicle.weight) notes.push('未填全车高/车重，校验可能不完整');
     const noteStr = notes.length ? ` ⚠ ${notes.join('。')}。` : ' 已通过本地已知限高与禁行校验（仍不能替代现场路牌及商业卡车导航）。';
-    $('route-status').textContent =
-      `${(summary.distance / 1609.344).toFixed(1)} mi · 约 ${Math.round(summary.duration / 60)} 分钟（无实时路况）。${noteStr} 转向文字为 ORS 英文。`;
+    setRouteStatus(
+      `${(summary.distance / 1609.344).toFixed(1)} mi · 约 ${Math.round(summary.duration / 60)} 分钟（无实时路况）。${noteStr} 转向文字为 ORS 英文。`,
+      'normal'
+    );
   } catch (err) {
     if (epoch === routeEpoch) {
       route = null;
       routeLayer.clearLayers();
       $('turns').replaceChildren();
       $('stop-nav').hidden = true;
-      $('route-status').classList.remove('route-blocked');
-      $('route-status').textContent = err.message + '；没有可用导航路线。';
+      const errMsg = formatRouteError(err);
+      setRouteStatus(errMsg, 'blocked');
+      if (!auto) notify(errMsg, { level: 'warn' });
     }
   } finally {
     routeBusy = false;

@@ -1913,3 +1913,287 @@ export function routeProgress(p, coords) {
   }
   return progress;
 }
+
+// Public truck-OK through-road classes (excludes residential, service, track, footway, etc.)
+export const TRUCK_OK_CLASSES = [
+  'motorway',
+  'motorway_link',
+  'trunk',
+  'trunk_link',
+  'primary',
+  'primary_link',
+  'secondary',
+  'secondary_link',
+  'tertiary',
+  'tertiary_link',
+];
+
+export const TRUCK_OK_MIN_ZOOM = {
+  motorway: 10,
+  trunk: 10,
+  primary: 11,
+  motorway_link: 12,
+  trunk_link: 12,
+  secondary: 12,
+  primary_link: 13,
+  secondary_link: 13,
+  tertiary: 14,
+  tertiary_link: 14,
+};
+
+export const TRUCK_OK_CLASS_LABELS = {
+  motorway: '高速公路',
+  motorway_link: '高速匝道',
+  trunk: '快速干道',
+  trunk_link: '快速路匝道',
+  primary: '主要干道',
+  primary_link: '主干道连接线',
+  secondary: '次要干道',
+  secondary_link: '次干道连接线',
+  tertiary: '区域支干道',
+  tertiary_link: '支干道连接线',
+};
+
+// Decode compact delta-encoded 1e-6 deg exact OSM way geometry from data/truck-ok-roads.json.
+// Preserves exact vertex sequence without smoothing or merging.
+export function decodeTruckOkRoads(data) {
+  if (!data || !Array.isArray(data.ways)) return [];
+  const classes = Array.isArray(data.classes) && data.classes.length ? data.classes : TRUCK_OK_CLASSES;
+  const names = Array.isArray(data.names) ? data.names : [];
+  const out = [];
+  for (const row of data.ways) {
+    if (!Array.isArray(row) || row.length < 4) continue;
+    const [osmId, clsIdx, nameRef, dcoords] = row;
+    const highway = classes[clsIdx];
+    if (!highway || !TRUCK_OK_MIN_ZOOM[highway]) continue;
+    if (!Array.isArray(dcoords) || dcoords.length < 4 || dcoords.length % 2 !== 0) continue;
+    const coords = [];
+    let latI = 0;
+    let lonI = 0;
+    let minLat = Infinity, minLon = Infinity, maxLat = -Infinity, maxLon = -Infinity;
+    for (let i = 0; i < dcoords.length; i += 2) {
+      if (i === 0) {
+        latI = dcoords[0];
+        lonI = dcoords[1];
+      } else {
+        latI += dcoords[i];
+        lonI += dcoords[i + 1];
+      }
+      const lat = latI / 1e6;
+      const lon = lonI / 1e6;
+      coords.push([lat, lon]);
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+    }
+    if (coords.length < 2) continue;
+    const name = typeof nameRef === 'number' ? (names[nameRef] || '') : String(nameRef || '');
+    out.push({
+      id: `way/${osmId}`,
+      osmRef: `way/${osmId}`,
+      osmId,
+      highway,
+      name,
+      coords,
+      bbox: [minLat, minLon, maxLat, maxLon],
+      minZoom: TRUCK_OK_MIN_ZOOM[highway],
+    });
+  }
+  return out;
+}
+
+export const UNLINKED_GREEN_SUPPRESS_RADIUS_M = 12;
+
+// Normalize supported OSM way ID fields (`osmRef`, `osmFeatureId`, `wayRef`, `id`, `osmType`/`osmId`) to `way/<id>`.
+export function extractWayRef(item) {
+  if (!item || typeof item !== 'object') return null;
+  for (const raw of [item.osmRef, item.osmFeatureId, item.wayRef]) {
+    if (typeof raw !== 'string') continue;
+    const m = raw.trim().match(/^(way\/\d+)(?:\/\d+)?$/);
+    if (m) return m[1];
+  }
+  if (item.osmType === 'way' && item.osmId != null) return `way/${item.osmId}`;
+  if (typeof item.id === 'string') {
+    const m = item.id.trim().match(/^(way\/\d+)(?:\/\d+)?$/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Subtract EVERY way ID that exists in the restriction dataset or driver non-can edits (`osmRef` / `osmFeatureId` / `wayRef`),
+// AND conservatively suppress green ways overlapping an unlinked driver `cannot` / `restriction` mark (<= 12 m on-road),
+// so green NEVER claims "正常通行" on a road with a restriction while leaving unrelated parallel roads untouched.
+// Unlinked `can` (can-pass) edits are ignored here and still never clear nearby restricted roads in `applyDriverOverrides()`.
+export function filterTruckOkRoads(okRoads = [], restrictedFeatures = [], driverEdits = []) {
+  const excludedRefs = new Set();
+  for (const f of restrictedFeatures || []) {
+    const ref = extractWayRef(f);
+    if (ref) excludedRefs.add(ref);
+  }
+  const unlinkedRestrictPts = [];
+  for (const e of driverEdits || []) {
+    if (!e || e.type === 'can') continue;
+    const ref = extractWayRef(e);
+    if (ref) {
+      excludedRefs.add(ref);
+    } else if (Number.isFinite(e.lat) && Number.isFinite(e.lng)) {
+      unlinkedRestrictPts.push([e.lat, e.lng]);
+    }
+  }
+  const bboxPadDeg = 0.00022; // ~24 m fast prefilter around tight 12 m on-road suppression radius
+  return (okRoads || []).filter(r => {
+    const wayRef = extractWayRef(r);
+    if (!r || !wayRef || TRUCK_OK_MIN_ZOOM[r.highway] == null || excludedRefs.has(wayRef)) return false;
+    if (!Array.isArray(r.coords) || r.coords.length < 2) return false;
+    if (unlinkedRestrictPts.length) {
+      const box = Array.isArray(r.bbox) && r.bbox.length === 4 ? r.bbox : coordsBbox(r.coords);
+      for (const pt of unlinkedRestrictPts) {
+        if (
+          pt[0] < box[0] - bboxPadDeg ||
+          pt[0] > box[2] + bboxPadDeg ||
+          pt[1] < box[1] - bboxPadDeg ||
+          pt[1] > box[3] + bboxPadDeg
+        ) {
+          continue;
+        }
+        if (nearLine(pt, r.coords).distance <= UNLINKED_GREEN_SUPPRESS_RADIUS_M) {
+          return false;
+        }
+      }
+    }
+    return true;
+  });
+}
+
+// Zoom-scaled thickness for public truck-OK green lines: bold & readable on phones without spilling off road centerlines.
+export function truckOkStyleForZoom(highway, zoom) {
+  const minZ = TRUCK_OK_MIN_ZOOM[highway];
+  if (minZ == null || zoom < 10 || zoom < minZ) {
+    return { visible: false, weight: 0, haloWeight: 0, opacity: 0 };
+  }
+  const isMajor = highway === 'motorway' || highway === 'trunk';
+  const isPrimary = highway === 'primary';
+  const isSecondary = highway === 'secondary';
+  const isLink = highway.endsWith('_link');
+
+  let weight;
+  if (isMajor) {
+    weight = zoom >= 16 ? 7.5 : (zoom >= 14 ? 6.5 : (zoom >= 12 ? 5 : 3.8));
+  } else if (isPrimary) {
+    weight = zoom >= 16 ? 6.5 : (zoom >= 14 ? 5.5 : (zoom >= 12 ? 4.2 : 3));
+  } else if (isSecondary) {
+    weight = zoom >= 16 ? 5.5 : (zoom >= 14 ? 4.5 : 3.2);
+  } else if (isLink) {
+    weight = zoom >= 16 ? 4 : (zoom >= 14 ? 3.2 : 2.5);
+  } else {
+    // tertiary
+    weight = zoom >= 16 ? 4.5 : 3.5;
+  }
+
+  return {
+    visible: true,
+    weight,
+    haloWeight: 0,
+    opacity: zoom >= 13 ? 0.84 : 0.78,
+  };
+}
+
+// Bundled green-road dataset consistency check (NOT a full upstream OSM raw-geometry or tag-level verification,
+// because the compact `delta-1e6` bundle quantizes vertices to 1e-6 deg ≈ 0.11 m and omits raw OSM tags):
+// Verifies (1) zero way-ID intersection with `data/osm-snapshot.json`, (2) allowed through-road classes only,
+// and (3) coordinates within Greater LA bbox without suspicious >5 km freeway / >2.5 km arterial segment jumps.
+export function validateTruckOkBundle(okData, snapshotData) {
+  const issues = [];
+  const restrictedWayIds = new Set(
+    (snapshotData?.elements || [])
+      .filter(el => el?.type === 'way' && el?.id != null)
+      .map(el => el.id)
+  );
+  const decoded = decodeTruckOkRoads(okData);
+  const [minLat, minLon, maxLat, maxLon] = BBOX;
+
+  for (const r of decoded) {
+    if (restrictedWayIds.has(r.osmId)) {
+      issues.push({ id: r.osmRef, reason: 'overlap_with_restricted_way' });
+    }
+    if (!TRUCK_OK_MIN_ZOOM[r.highway]) {
+      issues.push({ id: r.osmRef, reason: 'disallowed_highway_class', highway: r.highway });
+    }
+    for (let i = 0; i < r.coords.length; i++) {
+      const [lat, lon] = r.coords[i];
+      if (lat < minLat - 0.15 || lat > maxLat + 0.15 || lon < minLon - 0.15 || lon > maxLon + 0.15) {
+        issues.push({ id: r.osmRef, reason: 'coord_out_of_region', index: i });
+        break;
+      }
+      const maxStepM = (r.highway === 'motorway' || r.highway === 'trunk') ? 5000 : 2500;
+      if (i > 0 && distance(r.coords[i - 1], r.coords[i]) > maxStepM) {
+        issues.push({ id: r.osmRef, reason: 'teleport_segment_jump', index: i });
+        break;
+      }
+    }
+  }
+
+  return {
+    ok: issues.length === 0,
+    checkedCount: decoded.length,
+    issues,
+  };
+}
+
+export const auditTruckOkRoads = validateTruckOkBundle;
+
+// OpenRouteService migrated off the removed api.openrouteservice.org domain to HeiGIT's unified API gateway (2026-11-24).
+export const ORS_DIRECTIONS_URL = 'https://api.heigit.org/openrouteservice/v2/directions/driving-hgv/geojson';
+
+export const ROUTE_UNAVAILABLE_TITLE = '卡车路线功能暂未开通';
+
+export function getRouteUnavailableState(hasKey) {
+  if (!hasKey) {
+    return {
+      available: false,
+      title: ROUTE_UNAVAILABLE_TITLE,
+      message: `${ROUTE_UNAVAILABLE_TITLE}：需先在「设置」粘贴免费的 OpenRouteService (HeiGIT) API Key 才能规划卡车路线（密钥仅保存在本机浏览器）。地图限高、禁行、绿色可通行干道、地点搜索、定位预警与司机纠偏均可正常使用。`,
+    };
+  }
+  return {
+    available: true,
+    title: '',
+    message: 'ORS 密钥已在本机配置。请选择起终点规划卡车路线（路线将校验已知禁行与限高，但仍仅供参考）。',
+  };
+}
+
+// High-contrast royal blue + crisp white casing for planned truck routes:
+// unmistakable on phones and clearly distinct from green OK roads (#22c55e), dashed driver-can-pass (#16a34a), and red/yellow restrictions (#dc2626).
+export function plannedRouteStyles() {
+  return {
+    casing: { color: '#ffffff', weight: 13, opacity: 0.96, lineCap: 'round', lineJoin: 'round', smoothFactor: 0 },
+    line: { color: '#2563eb', weight: 7.5, opacity: 0.98, lineCap: 'round', lineJoin: 'round', smoothFactor: 0 },
+    startPin: { radius: 11, color: '#ffffff', weight: 3, fillColor: '#1d4ed8', fillOpacity: 1 },
+    endPin: { radius: 11, color: '#ffffff', weight: 3, fillColor: '#dc2626', fillOpacity: 1 },
+  };
+}
+
+export function formatRouteError(err) {
+  const status = err?.status;
+  const raw = String(err?.message || err || '');
+  if (status === 401 || status === 403 || /\b(401|403)\b/.test(raw)) {
+    return '路线请求被拒绝（HTTP 401/403）：请检查「设置」中的 OpenRouteService (HeiGIT) API Key 是否有效。';
+  }
+  if (status === 404 || /404|could not find|no route|没有返回可用路线/i.test(raw)) {
+    return '未找到可通行的卡车路线：请检查起终点是否位于禁行路段或无路区域，并适当调整起终点重试。';
+  }
+  if (status === 429 || /\b429\b/.test(raw)) {
+    return 'ORS 路线请求过于频繁或免费额度已用完（HTTP 429），请稍后再试。';
+  }
+  if (status >= 500 || /\b5\d\d\b/.test(raw)) {
+    return `ORS 路线服务暂时不可用（HTTP ${status || '5xx'}），请稍后重试。`;
+  }
+  if (/timeout|abort/i.test(raw) || err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+    return '请求卡车路线超时，请检查网络连接后重试。';
+  }
+  if (/failed to fetch|network|load failed/i.test(raw)) {
+    return '网络连接失败，无法连接 HeiGIT / OpenRouteService 路线服务，请检查网络后重试。';
+  }
+  return raw ? `路线规划失败：${raw}` : '路线规划失败，请稍后重试。';
+}

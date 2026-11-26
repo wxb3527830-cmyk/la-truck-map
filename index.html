@@ -30,12 +30,13 @@
       <span id="data-status" role="status">正在读取本地快照…</span>
     </div>
     <div class="legend" aria-label="图例">
+      <span><i class="ok-swatch"></i>正常通行</span>
       <span><i class="ban-swatch"></i>禁卡车</span>
       <span><i class="height-swatch"></i>限高标牌</span>
       <span><i class="orange"></i>限重</span>
       <span><i class="purple"></i>司机纠偏</span>
       <span><i class="green-dash"></i>司机标可通</span>
-      <small>地图直接显示桥高 (ft'in")、限重 (lbs) 与禁行；红牌/粗线表示本车超限或禁入</small>
+      <small>绿线为公共主干可通行参考，红黄线/红牌为禁行或超限；桥高 (ft'in") 与限重 (lbs) 仍以现场路牌为准</small>
     </div>
     <div class="map-actions">
       <button id="follow" type="button">◎ 开启定位</button>
@@ -78,7 +79,11 @@
       </div>
       <button id="route-btn" type="button" class="primary">规划卡车路线</button>
       <button id="stop-nav" type="button" hidden>结束导航</button>
-      <p id="route-status" class="notice">未配置 ORS 密钥：可查看限高标牌、禁行路段、定位、预警与司机纠偏；卡车路线需在「设置」填入免费 ORS Key 后启用。</p>
+      <div id="route-status" class="notice route-unavailable" role="status">
+        <strong class="route-banner-title">⚠ 卡车路线功能暂未开通</strong>
+        <span id="route-status-text">卡车路线功能暂未开通：需先在「设置」粘贴免费的 OpenRouteService (HeiGIT) API Key 才能规划卡车路线（密钥仅保存在本机浏览器）。地图限高、禁行、绿色可通行干道、地点搜索、定位预警与司机纠偏均可正常使用。</span>
+      </div>
+      <button id="goto-ors-settings" type="button" class="goto-settings-btn">前往「设置」填入免费 ORS API Key →</button>
       <ol id="turns"></ol>
     </section>
 
@@ -160,12 +165,12 @@
       <button type="button" id="test-alert">测试声音与振动</button>
       <p class="hint">请先点击一次测试以启用声音。iPhone 通常不支持网页振动；后台 / 锁屏不保证定位或语音。</p>
       <form id="ors-form" autocomplete="off">
-        <label>OpenRouteService API Key
+        <label>OpenRouteService (HeiGIT) API Key
           <input id="ors-key" type="password" autocomplete="new-password" placeholder="可留空，仅保存在此浏览器">
         </label>
         <button type="submit" id="save-key">保存密钥</button>
       </form>
-      <p class="hint">密钥仅保存于本机并仅发送给 ORS。浏览器存储不是加密保险箱；勿在共用设备保存。</p>
+      <p class="hint">密钥仅保存于本机并仅发送给 HeiGIT / OpenRouteService。浏览器存储不是加密保险箱；勿在共用设备保存。</p>
       <button type="button" id="refresh-data">刷新 OSM 限行</button>
       <p id="cache-info" class="hint"></p>
       <p class="hint">底图需要网络。离线可打开应用、车辆资料、已缓存限行和本机标记；不提供离线底图。</p>
